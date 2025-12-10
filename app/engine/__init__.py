@@ -16,6 +16,7 @@ from app.engine.selector import (
     compute_score,
     select_assets,
 )
+from app.engine.explanations import generate_explanation_nodes
 
 __all__ = [
     # Metrics (PR4)
@@ -28,4 +29,6 @@ __all__ = [
     "compute_score",
     "apply_filters",
     "select_assets",
+    # Explanations (PR6)
+    "generate_explanation_nodes",
 ]
