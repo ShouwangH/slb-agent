@@ -16,6 +16,7 @@ from app.models import (
     AssetSelection,
     AssetSLBMetrics,
     AssetType,
+    BaselineMetrics,
     ConstraintViolation,
     CorporateState,
     Explanation,
@@ -23,7 +24,11 @@ from app.models import (
     HardConstraints,
     MarketTier,
     Objective,
+    PortfolioMetrics,
+    PostMetrics,
+    ProgramOutcome,
     ProgramRequest,
+    ProgramResponse,
     ProgramType,
     SelectionStatus,
     SelectorSpec,
@@ -402,6 +407,129 @@ class TestSelectorSpec:
 
 
 # =============================================================================
+# Internal Metrics Model Tests
+# =============================================================================
+
+
+class TestBaselineMetrics:
+    """Test BaselineMetrics model."""
+
+    def test_all_none(self):
+        """All metrics can be None (undefined)."""
+        m = BaselineMetrics()
+        assert m.leverage is None
+        assert m.interest_coverage is None
+        assert m.fixed_charge_coverage is None
+
+    def test_with_values(self):
+        """Metrics can have numeric values."""
+        m = BaselineMetrics(
+            leverage=4.0,
+            interest_coverage=5.0,
+            fixed_charge_coverage=3.33,
+        )
+        assert m.leverage == 4.0
+        assert m.interest_coverage == 5.0
+        assert m.fixed_charge_coverage == 3.33
+
+    def test_partial_values(self):
+        """Some metrics can be set while others are None."""
+        m = BaselineMetrics(
+            leverage=4.0,
+            interest_coverage=None,  # e.g., zero interest
+            fixed_charge_coverage=3.0,
+        )
+        assert m.leverage == 4.0
+        assert m.interest_coverage is None
+
+
+class TestPostMetrics:
+    """Test PostMetrics model."""
+
+    def test_valid_post_metrics(self):
+        """Valid post metrics should pass."""
+        m = PostMetrics(
+            net_debt=1_500_000_000,
+            interest_expense=90_000_000,
+            total_lease_expense=60_000_000,
+            leverage=3.0,
+            interest_coverage=5.56,
+            fixed_charge_coverage=3.33,
+        )
+        assert m.net_debt == 1_500_000_000
+        assert m.total_lease_expense == 60_000_000
+
+    def test_net_debt_non_negative(self):
+        """Net debt must be >= 0."""
+        with pytest.raises(ValidationError):
+            PostMetrics(
+                net_debt=-1_000,  # Invalid
+                interest_expense=90_000_000,
+                total_lease_expense=60_000_000,
+            )
+
+    def test_coverage_can_be_none(self):
+        """Coverage metrics can be None when undefined."""
+        m = PostMetrics(
+            net_debt=1_500_000_000,
+            interest_expense=0,
+            total_lease_expense=60_000_000,
+            leverage=None,  # e.g., ebitda ≈ 0
+            interest_coverage=None,  # zero interest
+            fixed_charge_coverage=None,
+        )
+        assert m.interest_coverage is None
+
+
+class TestPortfolioMetrics:
+    """Test PortfolioMetrics model."""
+
+    def test_valid_portfolio_metrics(self):
+        """Valid portfolio metrics should pass."""
+        baseline = BaselineMetrics(
+            leverage=4.0,
+            interest_coverage=5.0,
+            fixed_charge_coverage=3.33,
+        )
+        post = PostMetrics(
+            net_debt=1_500_000_000,
+            interest_expense=90_000_000,
+            total_lease_expense=60_000_000,
+            leverage=3.0,
+            interest_coverage=5.56,
+            fixed_charge_coverage=3.33,
+        )
+        pm = PortfolioMetrics(
+            baseline=baseline,
+            post=post,
+            total_proceeds=500_000_000,
+            total_slb_rent=35_000_000,
+            critical_fraction=0.15,
+        )
+        assert pm.total_proceeds == 500_000_000
+        assert pm.baseline.leverage == 4.0
+        assert pm.post.leverage == 3.0
+
+    def test_critical_fraction_bounds(self):
+        """Critical fraction must be in [0, 1]."""
+        baseline = BaselineMetrics()
+        post = PostMetrics(
+            net_debt=1_000_000,
+            interest_expense=50_000,
+            total_lease_expense=30_000,
+        )
+
+        with pytest.raises(ValidationError):
+            PortfolioMetrics(
+                baseline=baseline,
+                post=post,
+                total_proceeds=100_000,
+                total_slb_rent=7_000,
+                critical_fraction=1.5,  # Invalid
+            )
+
+
+# =============================================================================
 # Output Model Tests
 # =============================================================================
 
@@ -474,6 +602,99 @@ class TestAssetSelection:
         )
         assert selection.asset.asset_id == "A001"
         assert selection.proceeds == 9_500_000
+
+
+class TestProgramOutcome:
+    """Test ProgramOutcome model."""
+
+    def test_valid_ok_outcome(self):
+        """Valid OK outcome should pass."""
+        asset = Asset(
+            asset_id="A001",
+            asset_type=AssetType.STORE,
+            market="Dallas, TX",
+            noi=500_000,
+            book_value=4_000_000,
+            criticality=0.3,
+            leaseability_score=0.8,
+        )
+        selection = AssetSelection(asset=asset, proceeds=9_500_000, slb_rent=500_000)
+        outcome = ProgramOutcome(
+            status=SelectionStatus.OK,
+            selected_assets=[selection],
+            proceeds=9_500_000,
+            leverage_before=4.0,
+            leverage_after=3.5,
+            interest_coverage_before=5.0,
+            interest_coverage_after=5.56,
+            fixed_charge_coverage_before=3.33,
+            fixed_charge_coverage_after=3.0,
+            critical_fraction=0.15,
+        )
+        assert outcome.status == SelectionStatus.OK
+        assert len(outcome.selected_assets) == 1
+        assert outcome.violations == []
+
+    def test_infeasible_outcome(self):
+        """Infeasible outcome with violations."""
+        violation = ConstraintViolation(
+            code="MAX_NET_LEVERAGE",
+            detail="Leverage 4.5x exceeds limit 4.0x",
+            actual=4.5,
+            limit=4.0,
+        )
+        outcome = ProgramOutcome(
+            status=SelectionStatus.INFEASIBLE,
+            selected_assets=[],
+            proceeds=0,
+            violations=[violation],
+        )
+        assert outcome.status == SelectionStatus.INFEASIBLE
+        assert len(outcome.violations) == 1
+        assert outcome.violations[0].code == "MAX_NET_LEVERAGE"
+
+    def test_coverage_metrics_optional(self):
+        """Coverage metrics can be None when undefined."""
+        outcome = ProgramOutcome(
+            status=SelectionStatus.OK,
+            proceeds=1_000_000,
+            leverage_before=None,  # e.g., ebitda ≈ 0
+            leverage_after=None,
+            interest_coverage_before=None,
+            interest_coverage_after=None,
+            fixed_charge_coverage_before=None,
+            fixed_charge_coverage_after=None,
+        )
+        assert outcome.leverage_before is None
+        assert outcome.interest_coverage_after is None
+
+    def test_warnings_list(self):
+        """Outcome can have warnings."""
+        outcome = ProgramOutcome(
+            status=SelectionStatus.OK,
+            proceeds=600_000_000,
+            warnings=["Proceeds exceed target by 20%", "Interest clamped to zero"],
+        )
+        assert len(outcome.warnings) == 2
+
+    def test_critical_fraction_bounds(self):
+        """Critical fraction must be in [0, 1]."""
+        with pytest.raises(ValidationError):
+            ProgramOutcome(
+                status=SelectionStatus.OK,
+                proceeds=1_000_000,
+                critical_fraction=1.5,  # Invalid
+            )
+
+    def test_default_empty_lists(self):
+        """Lists default to empty."""
+        outcome = ProgramOutcome(
+            status=SelectionStatus.OK,
+            proceeds=0,
+        )
+        assert outcome.selected_assets == []
+        assert outcome.violations == []
+        assert outcome.warnings == []
 
 
 # =============================================================================
@@ -613,6 +834,75 @@ class TestProgramRequest:
                 program_type=ProgramType.SLB,
                 program_description="",  # Invalid
             )
+
+
+class TestProgramResponse:
+    """Test ProgramResponse model."""
+
+    def test_valid_response(self):
+        """Valid response should pass."""
+        spec = SelectorSpec(
+            program_type=ProgramType.SLB,
+            objective=Objective.BALANCED,
+            target_amount=500_000_000,
+            hard_constraints=HardConstraints(max_net_leverage=4.0),
+            soft_preferences=SoftPreferences(),
+            asset_filters=AssetFilters(),
+        )
+        outcome = ProgramOutcome(
+            status=SelectionStatus.OK,
+            proceeds=485_000_000,
+            leverage_before=4.0,
+            leverage_after=3.5,
+        )
+        explanation = Explanation(
+            summary="Successfully structured a $485M SLB program.",
+            nodes=[],
+        )
+        response = ProgramResponse(
+            selector_spec=spec,
+            outcome=outcome,
+            explanation=explanation,
+        )
+        assert response.outcome.status == SelectionStatus.OK
+        assert response.selector_spec.target_amount == 500_000_000
+        assert "485M" in response.explanation.summary
+
+    def test_response_serialization_roundtrip(self):
+        """Response should serialize and deserialize correctly."""
+        spec = SelectorSpec(
+            program_type=ProgramType.SLB,
+            objective=Objective.MAXIMIZE_PROCEEDS,
+            target_amount=100_000_000,
+            hard_constraints=HardConstraints(),
+            soft_preferences=SoftPreferences(),
+            asset_filters=AssetFilters(),
+        )
+        outcome = ProgramOutcome(
+            status=SelectionStatus.INFEASIBLE,
+            proceeds=0,
+            violations=[
+                ConstraintViolation(
+                    code="TARGET_NOT_MET",
+                    detail="Could not meet target",
+                    actual=50_000_000,
+                    limit=100_000_000,
+                )
+            ],
+        )
+        explanation = Explanation(summary="Unable to meet target.")
+        response = ProgramResponse(
+            selector_spec=spec,
+            outcome=outcome,
+            explanation=explanation,
+        )
+
+        json_str = response.model_dump_json()
+        restored = ProgramResponse.model_validate_json(json_str)
+
+        assert restored.outcome.status == SelectionStatus.INFEASIBLE
+        assert len(restored.outcome.violations) == 1
+        assert restored.selector_spec.objective == Objective.MAXIMIZE_PROCEEDS
 
 
 # =============================================================================
