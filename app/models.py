@@ -1,0 +1,299 @@
+"""
+Pydantic models for SLB Agent.
+
+This module contains all data models as defined in DESIGN.md Section 4.
+Models handle validation and serialization only - no business logic.
+"""
+
+from enum import Enum
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field
+
+
+# =============================================================================
+# Enums (Section 4.1)
+# =============================================================================
+
+
+class AssetType(str, Enum):
+    """Property classification for real estate assets."""
+
+    STORE = "store"
+    DISTRIBUTION_CENTER = "distribution_center"
+    OFFICE = "office"
+    MIXED_USE = "mixed_use"
+    OTHER = "other"
+
+
+class MarketTier(int, Enum):
+    """Market classification by size/liquidity."""
+
+    TIER_1 = 1  # Primary markets (NYC, LA, Chicago)
+    TIER_2 = 2  # Secondary markets (Austin, Nashville)
+    TIER_3 = 3  # Tertiary markets
+
+
+class ProgramType(str, Enum):
+    """Funding program type."""
+
+    SLB = "slb"
+    # Future: REVOLVER = "revolver", CMBS = "cmbs", etc.
+
+
+class Objective(str, Enum):
+    """Optimization objective for asset selection."""
+
+    MAXIMIZE_PROCEEDS = "maximize_proceeds"
+    MINIMIZE_RISK = "minimize_risk"
+    BALANCED = "balanced"
+
+
+class SelectionStatus(str, Enum):
+    """Outcome status from the selection engine."""
+
+    OK = "ok"
+    INFEASIBLE = "infeasible"
+    NUMERIC_ERROR = "numeric_error"
+
+
+# =============================================================================
+# Input Models (Section 4.2-4.3)
+# =============================================================================
+
+
+class Asset(BaseModel):
+    """
+    A single real estate property in the portfolio.
+
+    V1 Active Fields: asset_id, asset_type, market, market_tier, noi,
+    book_value, criticality, leaseability_score
+    """
+
+    # Required fields (V1 active)
+    asset_id: str = Field(..., description="Unique identifier")
+    asset_type: AssetType = Field(..., description="Property classification")
+    market: str = Field(..., description="Location (e.g., 'Dallas, TX')")
+    noi: float = Field(..., gt=0, description="Annual Net Operating Income ($)")
+    book_value: float = Field(..., gt=0, description="Accounting book value ($)")
+    criticality: float = Field(
+        ..., ge=0, le=1, description="Mission-criticality score [0, 1]"
+    )
+    leaseability_score: float = Field(
+        ..., ge=0, le=1, description="Re-lease/repurpose ease [0, 1]"
+    )
+
+    # Optional fields
+    name: Optional[str] = Field(None, description="Human-readable name")
+    country: Optional[str] = Field(None, description="Country code")
+    market_tier: Optional[MarketTier] = Field(None, description="Market classification")
+    tenant_name: Optional[str] = Field(None, description="Primary tenant")
+    tenant_credit_score: Optional[float] = Field(
+        None, ge=0, le=1, description="Tenant credit [0, 1]"
+    )
+    wault_years: Optional[float] = Field(
+        None, ge=0, description="Weighted avg unexpired lease term"
+    )
+    demographic_index: Optional[float] = Field(
+        None, description="Future: location demographics"
+    )
+    esg_risk_score: Optional[float] = Field(None, description="Future: ESG risk")
+    current_ltv: Optional[float] = Field(
+        None, ge=0, le=1, description="Future: existing leverage"
+    )
+    existing_debt_amount: Optional[float] = Field(
+        None, ge=0, description="Future: encumbered debt"
+    )
+    encumbrance_type: Optional[str] = Field(
+        None, description="Future: mortgage, ground lease"
+    )
+
+
+class CorporateState(BaseModel):
+    """
+    Pre-transaction corporate financial position.
+
+    Validation allows ebitda to be negative (distressed company),
+    but downstream metrics will be None/undefined in that case.
+    """
+
+    net_debt: float = Field(..., ge=0, description="Total debt minus cash ($)")
+    ebitda: float = Field(..., description="Trailing 12-month EBITDA ($)")
+    interest_expense: float = Field(..., ge=0, description="Annual interest expense ($)")
+    lease_expense: Optional[float] = Field(
+        None, ge=0, description="Pre-SLB operating lease expense (default: 0)"
+    )
+
+
+# =============================================================================
+# Spec Models (Section 4.4)
+# =============================================================================
+
+
+class HardConstraints(BaseModel):
+    """
+    Immutable constraints that the engine must satisfy.
+    Once set from initial spec, the LLM cannot relax these.
+    """
+
+    max_net_leverage: Optional[float] = Field(
+        None, gt=0, lt=10, description="net_debt_after / ebitda <= max_net_leverage"
+    )
+    min_interest_coverage: Optional[float] = Field(
+        None, gt=0, lt=50, description="ebitda / interest_after >= min_interest_coverage"
+    )
+    min_fixed_charge_coverage: Optional[float] = Field(
+        None,
+        gt=0,
+        lt=20,
+        description="ebitda / (interest_after + lease_expense) >= min_fixed_charge_coverage",
+    )
+    max_critical_fraction: Optional[float] = Field(
+        None,
+        gt=0,
+        le=1,
+        description="Critical NOI fraction limit",
+    )
+    # V2: max_asset_type_share: Optional[Dict[AssetType, float]] = None
+
+
+class SoftPreferences(BaseModel):
+    """
+    Adjustable preferences that influence scoring.
+    LLM may relax these during revision.
+    """
+
+    prefer_low_criticality: bool = Field(
+        True, description="Favor non-critical assets in scoring"
+    )
+    prefer_high_leaseability: bool = Field(
+        True, description="Favor easily re-leased assets in scoring"
+    )
+    weight_criticality: float = Field(
+        1.0, ge=0, description="Weight for criticality in scoring function"
+    )
+    weight_leaseability: float = Field(
+        1.0, ge=0, description="Weight for leaseability in scoring function"
+    )
+
+
+class AssetFilters(BaseModel):
+    """
+    Pre-selection filters applied before scoring.
+    LLM may relax these during revision.
+    """
+
+    include_asset_types: Optional[list[AssetType]] = Field(
+        None, description="Whitelist (None = all)"
+    )
+    exclude_asset_types: Optional[list[AssetType]] = Field(None, description="Blacklist")
+    exclude_markets: Optional[list[str]] = Field(None, description="Markets to exclude")
+    min_leaseability_score: Optional[float] = Field(
+        None, ge=0, le=1, description="Floor for eligibility"
+    )
+    max_criticality: Optional[float] = Field(
+        None, ge=0, le=1, description="Ceiling for eligibility"
+    )
+
+
+class SelectorSpec(BaseModel):
+    """
+    Structured representation of program parameters.
+    Generated/revised by LLM.
+    """
+
+    program_type: ProgramType
+    objective: Objective
+    target_amount: float = Field(..., gt=0, description="Target SLB proceeds in dollars")
+    hard_constraints: HardConstraints
+    soft_preferences: SoftPreferences
+    asset_filters: AssetFilters
+    time_horizon_years: Optional[int] = Field(None, gt=0)
+    max_iterations: int = Field(3, ge=1, le=10, description="Bounds the agentic revision loop")
+
+
+# =============================================================================
+# Output Models (Section 4.5)
+# =============================================================================
+
+
+class ConstraintViolation(BaseModel):
+    """A single constraint violation with details."""
+
+    code: str = Field(..., description="Constraint identifier (e.g., 'MAX_NET_LEVERAGE')")
+    detail: str = Field(..., description="Human-readable explanation")
+    actual: float = Field(..., description="Computed value")
+    limit: float = Field(..., description="Constraint threshold")
+
+
+class AssetSLBMetrics(BaseModel):
+    """Per-asset SLB economics computed by the engine."""
+
+    market_value: float = Field(..., ge=0)
+    proceeds: float = Field(..., ge=0)
+    slb_rent: float = Field(..., ge=0)
+    cap_rate: float = Field(..., gt=0, lt=1)
+
+
+class AssetSelection(BaseModel):
+    """A selected asset with its SLB economics."""
+
+    asset: Asset
+    proceeds: float = Field(..., ge=0, description="SLB proceeds from this asset")
+    slb_rent: float = Field(..., ge=0, description="Annual leaseback rent obligation")
+
+
+# =============================================================================
+# Explanation Models (Section 4.6)
+# =============================================================================
+
+
+class ExplanationNode(BaseModel):
+    """
+    A single explanation item with machine-readable metadata.
+    The engine produces these; LLM/UI renders them to human text.
+    """
+
+    id: str = Field(..., description="Unique identifier for this node")
+    label: str = Field(..., description="Human-readable label")
+    severity: Literal["info", "warning", "error"] = Field(..., description="Severity level")
+    category: Literal["constraint", "driver", "risk", "alternative"] = Field(
+        ..., description="Node category"
+    )
+    metric: Optional[str] = Field(
+        None, description="Related metric name (e.g., 'fixed_charge_coverage')"
+    )
+    baseline_value: Optional[float] = Field(None, description="Pre-transaction value")
+    post_value: Optional[float] = Field(None, description="Post-transaction value")
+    threshold: Optional[float] = Field(None, description="Constraint threshold if applicable")
+    asset_ids: Optional[list[str]] = Field(None, description="Related asset IDs")
+    detail: Optional[str] = Field(None, description="Additional context")
+
+
+class Explanation(BaseModel):
+    """
+    Structured explanation data returned by the engine.
+    LLM generates summary from nodes.
+    """
+
+    summary: str = Field(..., description="2-3 sentence executive summary")
+    nodes: list[ExplanationNode] = Field(
+        default_factory=list, description="Structured explanation items"
+    )
+
+
+# =============================================================================
+# API Models (Section 4.7)
+# =============================================================================
+
+
+class ProgramRequest(BaseModel):
+    """Request body for POST /program endpoint."""
+
+    assets: list[Asset] = Field(..., min_length=1)
+    corporate_state: CorporateState
+    program_type: ProgramType
+    program_description: str = Field(..., min_length=1)
+
+
+# NOTE: ProgramResponse is defined in PR 2 after ProgramOutcome exists
