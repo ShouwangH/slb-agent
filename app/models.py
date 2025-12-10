@@ -213,6 +213,70 @@ class SelectorSpec(BaseModel):
 
 
 # =============================================================================
+# Internal Metrics Models (for engine computation)
+# =============================================================================
+
+
+class BaselineMetrics(BaseModel):
+    """
+    Pre-transaction corporate metrics computed from CorporateState.
+
+    Coverage metrics are Optional because they become undefined when
+    the denominator is near zero (e.g., zero interest expense).
+    """
+
+    leverage: Optional[float] = Field(
+        None, description="net_debt / ebitda (None if ebitda ≈ 0)"
+    )
+    interest_coverage: Optional[float] = Field(
+        None, description="ebitda / interest_expense (None if interest ≈ 0)"
+    )
+    fixed_charge_coverage: Optional[float] = Field(
+        None, description="ebitda / (interest + lease_expense) (None if denominator ≈ 0)"
+    )
+
+
+class PostMetrics(BaseModel):
+    """
+    Post-transaction corporate metrics after SLB execution.
+
+    Computed from CorporateState + selected assets + config.
+    """
+
+    net_debt: float = Field(..., ge=0, description="Net debt after proceeds applied")
+    interest_expense: float = Field(..., ge=0, description="Interest after debt paydown")
+    total_lease_expense: float = Field(..., ge=0, description="Original lease + SLB rent")
+    leverage: Optional[float] = Field(
+        None, description="net_debt_after / ebitda (None if ebitda ≈ 0)"
+    )
+    interest_coverage: Optional[float] = Field(
+        None, description="ebitda / interest_after (None if interest ≈ 0)"
+    )
+    fixed_charge_coverage: Optional[float] = Field(
+        None, description="ebitda / (interest + leases) (None if denominator ≈ 0)"
+    )
+
+
+class PortfolioMetrics(BaseModel):
+    """
+    Combined before/after metrics for constraint checking and reporting.
+
+    This is the primary metrics container passed between engine functions.
+    """
+
+    # Pre-transaction
+    baseline: BaselineMetrics
+
+    # Post-transaction
+    post: PostMetrics
+
+    # Selection-specific
+    total_proceeds: float = Field(..., ge=0)
+    total_slb_rent: float = Field(..., ge=0)
+    critical_fraction: float = Field(..., ge=0, le=1)
+
+
+# =============================================================================
 # Output Models (Section 4.5)
 # =============================================================================
 
@@ -241,6 +305,53 @@ class AssetSelection(BaseModel):
     asset: Asset
     proceeds: float = Field(..., ge=0, description="SLB proceeds from this asset")
     slb_rent: float = Field(..., ge=0, description="Annual leaseback rent obligation")
+
+
+class ProgramOutcome(BaseModel):
+    """
+    Full outcome from the selection engine (Section 4.5.3).
+
+    Contains selection results, before/after metrics, and any violations.
+    Coverage metrics are Optional because they become undefined when
+    the denominator is near zero.
+    """
+
+    status: SelectionStatus = Field(..., description="ok / infeasible / numeric_error")
+    selected_assets: list[AssetSelection] = Field(
+        default_factory=list, description="Assets in the SLB pool"
+    )
+    proceeds: float = Field(..., ge=0, description="Total SLB proceeds")
+
+    # Pre-transaction metrics
+    leverage_before: Optional[float] = Field(None, description="Pre-transaction net leverage")
+    interest_coverage_before: Optional[float] = Field(
+        None, description="Pre-transaction interest coverage (EBITDA / Interest)"
+    )
+    fixed_charge_coverage_before: Optional[float] = Field(
+        None, description="Pre-transaction fixed charge coverage (EBITDA / (Interest + Leases))"
+    )
+
+    # Post-transaction metrics
+    leverage_after: Optional[float] = Field(None, description="Post-transaction net leverage")
+    interest_coverage_after: Optional[float] = Field(
+        None, description="Post-transaction interest coverage"
+    )
+    fixed_charge_coverage_after: Optional[float] = Field(
+        None, description="Post-transaction fixed charge coverage"
+    )
+
+    # Selection metrics
+    critical_fraction: float = Field(
+        0.0, ge=0, le=1, description="Critical NOI / Total selected NOI"
+    )
+
+    # Issues
+    violations: list[ConstraintViolation] = Field(
+        default_factory=list, description="Constraint violations (empty if OK)"
+    )
+    warnings: list[str] = Field(
+        default_factory=list, description="Non-fatal warnings (e.g., 'surplus proceeds ignored')"
+    )
 
 
 # =============================================================================
@@ -296,4 +407,9 @@ class ProgramRequest(BaseModel):
     program_description: str = Field(..., min_length=1)
 
 
-# NOTE: ProgramResponse is defined in PR 2 after ProgramOutcome exists
+class ProgramResponse(BaseModel):
+    """Response body for POST /program endpoint (Section 4.7)."""
+
+    selector_spec: SelectorSpec = Field(..., description="The spec used for selection")
+    outcome: ProgramOutcome = Field(..., description="Selection results and metrics")
+    explanation: Explanation = Field(..., description="Structured explanation with summary")
