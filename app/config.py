@@ -123,3 +123,35 @@ class EngineConfig(BaseModel):
 # =============================================================================
 
 DEFAULT_ENGINE_CONFIG = EngineConfig()
+
+
+# =============================================================================
+# LLM Configuration (Section 9.1)
+# =============================================================================
+
+
+class LLMConfig(BaseModel):
+    """
+    Configuration for LLM client.
+
+    Controls model selection, temperature, and token limits.
+    """
+
+    model: str = Field(
+        default="gpt-4o-mini",
+        description="OpenAI model to use (gpt-4o-mini for dev, gpt-4o for production)",
+    )
+    temperature: float = Field(
+        default=0.2,
+        ge=0,
+        le=2,
+        description="Sampling temperature (low for structured output)",
+    )
+    max_tokens: int = Field(
+        default=2000,
+        gt=0,
+        description="Maximum tokens in response",
+    )
+
+
+DEFAULT_LLM_CONFIG = LLMConfig()

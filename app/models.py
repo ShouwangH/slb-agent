@@ -413,3 +413,11 @@ class ProgramResponse(BaseModel):
     selector_spec: SelectorSpec = Field(..., description="The spec used for selection")
     outcome: ProgramOutcome = Field(..., description="Selection results and metrics")
     explanation: Explanation = Field(..., description="Structured explanation with summary")
+
+
+class ErrorResponse(BaseModel):
+    """Error response body for API errors (Section 10.2)."""
+
+    error: str = Field(..., description="Short error description")
+    detail: Optional[str] = Field(None, description="Detailed error message")
+    code: str = Field(..., description="Error code (e.g., 'UNSUPPORTED_PROGRAM_TYPE')")
