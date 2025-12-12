@@ -1,0 +1,297 @@
+/**
+ * App-specific styles for SLB Scenario Planner.
+ *
+ * These styles are scoped to the main App component.
+ * Component-specific styles will be added in PR6.
+ */
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-light) 100%);
+  color: white;
+  padding: var(--space-lg) var(--space-xl);
+  text-align: center;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+  color: white;
+}
+
+.app-header .subtitle {
+  margin: var(--space-sm) 0 0;
+  opacity: 0.85;
+  font-size: 0.95rem;
+}
+
+.app-main {
+  flex: 1;
+  padding: var(--space-xl);
+  background-color: var(--color-gray-50);
+}
+
+.placeholder-content {
+  max-width: 600px;
+  margin: 0 auto;
+  background: white;
+  border-radius: var(--radius-md);
+  padding: var(--space-xl);
+  box-shadow: var(--shadow-md);
+}
+
+.placeholder-content h2 {
+  margin-top: 0;
+  color: var(--color-gray-700);
+  border-bottom: 2px solid var(--color-gray-200);
+  padding-bottom: var(--space-sm);
+}
+
+.placeholder-content p {
+  color: var(--color-gray-600);
+  line-height: 1.6;
+}
+
+.feature-list,
+.tech-stack {
+  margin-top: var(--space-lg);
+}
+
+.feature-list h3,
+.tech-stack h3 {
+  font-size: 1rem;
+  color: var(--color-gray-700);
+  margin-bottom: var(--space-sm);
+}
+
+.feature-list ul,
+.tech-stack ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.feature-list li,
+.tech-stack li {
+  padding: var(--space-sm) 0;
+  padding-left: var(--space-lg);
+  position: relative;
+  color: var(--color-gray-600);
+  border-bottom: 1px solid var(--color-gray-100);
+}
+
+.feature-list li:last-child,
+.tech-stack li:last-child {
+  border-bottom: none;
+}
+
+.feature-list li::before {
+  content: "→";
+  position: absolute;
+  left: 0;
+  color: var(--color-secondary);
+}
+
+.tech-stack li::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: var(--color-success);
+}
+
+.app-footer {
+  background: var(--color-primary);
+  color: white;
+  padding: var(--space-md) var(--space-xl);
+  text-align: center;
+  font-size: 0.875rem;
+}
+
+.app-footer p {
+  margin: 0;
+  opacity: 0.9;
+}
+
+/* =============================================================================
+ * Three-column layout (for PR6 ScenarioPlannerPage)
+ * ============================================================================= */
+
+.scenario-planner {
+  display: grid;
+  grid-template-columns: 280px 1fr 320px;
+  gap: var(--space-md);
+  height: calc(100vh - 120px);
+  padding: var(--space-md);
+}
+
+.scenario-planner .sidebar-left {
+  background: white;
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  overflow-y: auto;
+  box-shadow: var(--shadow-md);
+}
+
+.scenario-planner .main-content {
+  background: white;
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  overflow-y: auto;
+  box-shadow: var(--shadow-md);
+}
+
+.scenario-planner .sidebar-right {
+  background: white;
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  overflow-y: auto;
+  box-shadow: var(--shadow-md);
+}
+
+@media (max-width: 1024px) {
+  .scenario-planner {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto;
+    height: auto;
+  }
+}
+
+/* =============================================================================
+ * Common component styles (for PR6)
+ * ============================================================================= */
+
+/* Cards */
+.card {
+  background: white;
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+  box-shadow: var(--shadow-md);
+}
+
+.card-header {
+  font-weight: 600;
+  color: var(--color-gray-700);
+  margin-bottom: 0.75rem;
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--color-gray-200);
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-block;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.status-badge.ok {
+  background: #c6f6d5;
+  color: #276749;
+}
+
+.status-badge.infeasible {
+  background: #fed7d7;
+  color: #c53030;
+}
+
+.status-badge.numeric-error {
+  background: #feebc8;
+  color: #c05621;
+}
+
+.status-badge.completed {
+  background: #c6f6d5;
+  color: #276749;
+}
+
+.status-badge.failed {
+  background: #fed7d7;
+  color: #c53030;
+}
+
+/* Source badges */
+.source-badge {
+  display: inline-block;
+  padding: 0.2rem 0.4rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+
+.source-badge.user_override {
+  background: #bee3f8;
+  color: #2b6cb0;
+}
+
+.source-badge.llm_extraction {
+  background: #e9d8fd;
+  color: #6b46c1;
+}
+
+/* Metrics display */
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--color-gray-100);
+}
+
+.metric-row:last-child {
+  border-bottom: none;
+}
+
+.metric-label {
+  color: var(--color-gray-500);
+  font-size: 0.875rem;
+}
+
+.metric-value {
+  font-weight: 600;
+  color: var(--color-gray-700);
+}
+
+.metric-delta {
+  font-size: 0.75rem;
+  margin-left: var(--space-sm);
+}
+
+.metric-delta.positive {
+  color: var(--color-success);
+}
+
+.metric-delta.negative {
+  color: var(--color-error);
+}
+
+/* Loading and error states */
+.loading-spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-xl);
+  color: var(--color-gray-500);
+}
+
+.error-banner {
+  background: #fed7d7;
+  border: 1px solid #fc8181;
+  color: #c53030;
+  padding: var(--space-md);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-md);
+}
+
+.empty-state {
+  text-align: center;
+  padding: var(--space-xl);
+  color: var(--color-gray-400);
+}
