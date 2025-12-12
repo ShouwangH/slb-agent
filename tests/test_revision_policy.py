@@ -19,11 +19,33 @@ from app.models import (
     AssetFilters,
     HardConstraints,
     Objective,
+    PolicyViolation,
+    PolicyViolationCode,
     ProgramType,
     SelectorSpec,
     SoftPreferences,
 )
 from app.revision_policy import PolicyResult, enforce_revision_policy
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+def violation_codes(violations: list[PolicyViolation]) -> list[PolicyViolationCode]:
+    """Extract violation codes from a list of PolicyViolation objects."""
+    return [v.code for v in violations]
+
+
+def has_violation_code(violations: list[PolicyViolation], code: PolicyViolationCode) -> bool:
+    """Check if a specific violation code exists in the list."""
+    return any(v.code == code for v in violations)
+
+
+def has_violation_field(violations: list[PolicyViolation], field: str) -> bool:
+    """Check if a violation exists for a specific field."""
+    return any(v.field == field for v in violations)
 
 
 # =============================================================================
@@ -99,17 +121,29 @@ class TestPolicyResult:
 
     def test_valid_result_with_spec(self, base_spec: SelectorSpec) -> None:
         """Valid result includes spec and may have violations."""
-        result = PolicyResult(valid=True, spec=base_spec, violations=["warning"])
+        violation = PolicyViolation(
+            code=PolicyViolationCode.TARGET_INCREASED,
+            detail="warning",
+            field="target_amount",
+        )
+        result = PolicyResult(valid=True, spec=base_spec, violations=[violation])
         assert result.valid is True
         assert result.spec is base_spec
-        assert result.violations == ["warning"]
+        assert len(result.violations) == 1
+        assert result.violations[0].code == PolicyViolationCode.TARGET_INCREASED
 
     def test_invalid_result_no_spec(self) -> None:
         """Invalid result has no spec."""
-        result = PolicyResult(valid=False, spec=None, violations=["error"])
+        violation = PolicyViolation(
+            code=PolicyViolationCode.TARGET_BELOW_FLOOR,
+            detail="error",
+            field="target_amount",
+        )
+        result = PolicyResult(valid=False, spec=None, violations=[violation])
         assert result.valid is False
         assert result.spec is None
-        assert result.violations == ["error"]
+        assert len(result.violations) == 1
+        assert result.violations[0].code == PolicyViolationCode.TARGET_BELOW_FLOOR
 
     def test_result_with_empty_violations(self, base_spec: SelectorSpec) -> None:
         """Result can have empty violations list."""
@@ -183,7 +217,7 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.max_net_leverage == 4.0
-        assert any("max_net_leverage" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.LEVERAGE_RELAXED)
 
     def test_max_net_leverage_decrease_allowed(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -201,7 +235,7 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.max_net_leverage == 3.0
-        assert not any("max_net_leverage" in v for v in result.violations)
+        assert not has_violation_field(result.violations, "max_net_leverage")
 
     def test_min_fixed_charge_coverage_decrease_clamped(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -219,7 +253,7 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.min_fixed_charge_coverage == 3.0
-        assert any("min_fixed_charge_coverage" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.FIXED_CHARGE_COVERAGE_RELAXED)
 
     def test_min_fixed_charge_coverage_increase_allowed(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -254,7 +288,7 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.min_interest_coverage == 2.0
-        assert any("min_interest_coverage" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.INTEREST_COVERAGE_RELAXED)
 
     def test_max_critical_fraction_increase_clamped(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -272,7 +306,7 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.max_critical_fraction == 0.3
-        assert any("max_critical_fraction" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.CRITICAL_FRACTION_RELAXED)
 
     def test_none_hard_constraint_not_enforced(
         self, base_spec: SelectorSpec
@@ -316,7 +350,8 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.max_net_leverage == 4.0
-        assert any("Cannot remove max_net_leverage" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.CONSTRAINT_DELETED)
+        assert has_violation_field(result.violations, "max_net_leverage")
 
     def test_min_fixed_charge_coverage_deletion_restored(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -334,7 +369,8 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.min_fixed_charge_coverage == 3.0
-        assert any("Cannot remove min_fixed_charge_coverage" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.CONSTRAINT_DELETED)
+        assert has_violation_field(result.violations, "min_fixed_charge_coverage")
 
     def test_min_interest_coverage_deletion_restored(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -352,7 +388,8 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.min_interest_coverage == 2.0
-        assert any("Cannot remove min_interest_coverage" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.CONSTRAINT_DELETED)
+        assert has_violation_field(result.violations, "min_interest_coverage")
 
     def test_max_critical_fraction_deletion_restored(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -370,7 +407,8 @@ class TestHardConstraintImmutability:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.hard_constraints.max_critical_fraction == 0.3
-        assert any("Cannot remove max_critical_fraction" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.CONSTRAINT_DELETED)
+        assert has_violation_field(result.violations, "max_critical_fraction")
 
 
 # =============================================================================
@@ -397,7 +435,7 @@ class TestTargetAmountMonotonicity:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.target_amount == 100_000_000
-        assert any("cannot increase" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.TARGET_INCREASED)
 
     def test_target_same_allowed(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -415,7 +453,7 @@ class TestTargetAmountMonotonicity:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.target_amount == 100_000_000
-        assert not any("target_amount" in v for v in result.violations)
+        assert not has_violation_field(result.violations, "target_amount")
 
     def test_target_decrease_within_20_percent_allowed(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -450,7 +488,7 @@ class TestTargetAmountMonotonicity:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.target_amount == 80_000_000  # Clamped to 20% drop
-        assert any("20%" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.TARGET_DROP_EXCEEDED)
 
     def test_target_exactly_20_percent_allowed(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -469,7 +507,7 @@ class TestTargetAmountMonotonicity:
         assert result.spec is not None
         assert result.spec.target_amount == 80_000_000
         # Should not have per-iteration violation
-        assert not any("20%" in v for v in result.violations)
+        assert not has_violation_code(result.violations, PolicyViolationCode.TARGET_DROP_EXCEEDED)
 
     def test_target_below_75_percent_floor_invalid(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -488,7 +526,7 @@ class TestTargetAmountMonotonicity:
 
         assert result.valid is False
         assert result.spec is None
-        assert any("75%" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.TARGET_BELOW_FLOOR)
 
     def test_target_at_75_percent_floor_allowed(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -541,7 +579,7 @@ class TestTargetAmountMonotonicity:
         # This should now fail because 64M is below 75% of original
         assert result_2.valid is False
         assert result_2.spec is None
-        assert any("75%" in v for v in result_2.violations)
+        assert has_violation_code(result_2.violations, PolicyViolationCode.TARGET_BELOW_FLOOR)
 
 
 # =============================================================================
@@ -585,7 +623,7 @@ class TestMaxCriticalityRelaxation:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.asset_filters.max_criticality == pytest.approx(0.6)  # Clamped to +0.1
-        assert any("max_criticality" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.CRITICALITY_STEP_EXCEEDED)
 
     def test_criticality_ceiling_at_0_8(
         self, base_hard_constraints: HardConstraints
@@ -679,7 +717,7 @@ class TestMinLeaseabilityRelaxation:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.asset_filters.min_leaseability_score == pytest.approx(0.4)  # Clamped to -0.1
-        assert any("min_leaseability_score" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.LEASEABILITY_STEP_EXCEEDED)
 
     def test_leaseability_floor_at_0_2(
         self, base_hard_constraints: HardConstraints
@@ -761,7 +799,8 @@ class TestFilterDeletion:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.asset_filters.max_criticality == pytest.approx(0.5)
-        assert any("Cannot remove max_criticality" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.FILTER_DELETED)
+        assert has_violation_field(result.violations, "max_criticality")
 
     def test_min_leaseability_deletion_restored(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
@@ -779,7 +818,8 @@ class TestFilterDeletion:
         assert result.valid is True
         assert result.spec is not None
         assert result.spec.asset_filters.min_leaseability_score == pytest.approx(0.5)
-        assert any("Cannot remove min_leaseability_score" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.FILTER_DELETED)
+        assert has_violation_field(result.violations, "min_leaseability_score")
 
     def test_filter_deletion_allowed_when_prev_was_none(
         self, base_hard_constraints: HardConstraints
@@ -799,7 +839,7 @@ class TestFilterDeletion:
         assert result.spec is not None
         assert result.spec.asset_filters.max_criticality is None
         assert result.spec.asset_filters.min_leaseability_score is None
-        assert not any("Cannot remove" in v for v in result.violations)
+        assert not has_violation_code(result.violations, PolicyViolationCode.FILTER_DELETED)
 
 
 # =============================================================================
@@ -917,4 +957,115 @@ class TestCombinedScenarios:
 
         assert result.valid is False
         assert result.spec is None
-        assert any("75%" in v for v in result.violations)
+        assert has_violation_code(result.violations, PolicyViolationCode.TARGET_BELOW_FLOOR)
+
+
+# =============================================================================
+# Floor Fraction Parameter Tests
+# =============================================================================
+
+
+class TestFloorFractionParameter:
+    """Tests for the floor_fraction parameter (sacred override vs llm extraction)."""
+
+    def test_default_floor_fraction_is_75_percent(
+        self, base_hard_constraints: HardConstraints
+    ) -> None:
+        """Default floor_fraction is 0.75 (75% of original)."""
+        prev_spec = make_spec(target_amount=80_000_000)
+        # 75M is exactly 75% of original, should be valid
+        new_spec = make_spec(target_amount=75_000_000)
+
+        result = enforce_revision_policy(
+            base_hard_constraints,
+            original_target=100_000_000,
+            prev_spec=prev_spec,
+            new_spec=new_spec,
+        )
+
+        assert result.valid is True
+        assert result.spec is not None
+
+    def test_sacred_override_floor_is_100_percent(
+        self, base_hard_constraints: HardConstraints
+    ) -> None:
+        """floor_fraction=1.0 means target cannot decrease at all (sacred override)."""
+        prev_spec = make_spec(target_amount=100_000_000)
+        # Try to reduce by 10%, which is normally allowed
+        new_spec = make_spec(target_amount=90_000_000)
+
+        result = enforce_revision_policy(
+            base_hard_constraints,
+            original_target=100_000_000,
+            prev_spec=prev_spec,
+            new_spec=new_spec,
+            floor_fraction=1.0,  # Sacred override - no reduction allowed
+        )
+
+        # Any reduction below 100% of original is invalid with floor_fraction=1.0
+        assert result.valid is False
+        assert result.spec is None
+        assert has_violation_code(result.violations, PolicyViolationCode.TARGET_BELOW_FLOOR)
+
+    def test_sacred_override_exact_original_allowed(
+        self, base_hard_constraints: HardConstraints
+    ) -> None:
+        """floor_fraction=1.0 allows keeping target at exactly original."""
+        prev_spec = make_spec(target_amount=100_000_000)
+        new_spec = make_spec(target_amount=100_000_000)  # Keep same
+
+        result = enforce_revision_policy(
+            base_hard_constraints,
+            original_target=100_000_000,
+            prev_spec=prev_spec,
+            new_spec=new_spec,
+            floor_fraction=1.0,
+        )
+
+        assert result.valid is True
+        assert result.spec is not None
+        assert result.spec.target_amount == 100_000_000
+
+    def test_custom_floor_fraction(
+        self, base_hard_constraints: HardConstraints
+    ) -> None:
+        """Custom floor_fraction (e.g., 0.5) allows reduction to 50%."""
+        prev_spec = make_spec(target_amount=100_000_000)
+        # With default 0.75, going to 50M would fail
+        # With floor_fraction=0.5, it should be valid
+        # But we can only drop 20% per iteration, so we need to be at a lower prev_spec
+        prev_spec = make_spec(target_amount=60_000_000)
+        new_spec = make_spec(target_amount=50_000_000)  # 50% of original, within 20% of prev
+
+        result = enforce_revision_policy(
+            base_hard_constraints,
+            original_target=100_000_000,
+            prev_spec=prev_spec,
+            new_spec=new_spec,
+            floor_fraction=0.5,  # Allow down to 50%
+        )
+
+        assert result.valid is True
+        assert result.spec is not None
+        assert result.spec.target_amount == 50_000_000
+
+    def test_floor_fraction_violation_message_uses_parameter(
+        self, base_hard_constraints: HardConstraints
+    ) -> None:
+        """Violation message reflects the floor_fraction used."""
+        prev_spec = make_spec(target_amount=100_000_000)
+        new_spec = make_spec(target_amount=90_000_000)
+
+        result = enforce_revision_policy(
+            base_hard_constraints,
+            original_target=100_000_000,
+            prev_spec=prev_spec,
+            new_spec=new_spec,
+            floor_fraction=1.0,
+        )
+
+        assert result.valid is False
+        floor_violation = next(
+            v for v in result.violations if v.code == PolicyViolationCode.TARGET_BELOW_FLOOR
+        )
+        assert "100%" in floor_violation.detail  # Should mention 100% floor
