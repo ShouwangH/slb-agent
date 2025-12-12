@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.config import DEFAULT_REVISION_POLICY_CONFIG, RevisionPolicyConfig
-from app.models import HardConstraints, SelectorSpec
+from app.models import HardConstraints, PolicyViolation, PolicyViolationCode, SelectorSpec
 
 
 @dataclass
@@ -31,12 +31,12 @@ class PolicyResult:
     Attributes:
         valid: Whether the revision is acceptable (possibly after adjustments)
         spec: The adjusted spec (None if valid=False)
-        violations: List of policy violations found (may be non-empty even if valid=True)
+        violations: List of structured policy violations (may be non-empty even if valid=True)
     """
 
     valid: bool
     spec: Optional[SelectorSpec]
-    violations: list[str]
+    violations: list[PolicyViolation]
 
 
 def enforce_revision_policy(
@@ -44,6 +44,7 @@ def enforce_revision_policy(
     original_target: float,
     prev_spec: SelectorSpec,
     new_spec: SelectorSpec,
+    floor_fraction: float = DEFAULT_REVISION_POLICY_CONFIG.global_target_floor_fraction,
     config: RevisionPolicyConfig = DEFAULT_REVISION_POLICY_CONFIG,
 ) -> PolicyResult:
     """
@@ -58,9 +59,12 @@ def enforce_revision_policy(
         original_target: The original target amount from the first spec
         prev_spec: The previous spec (for per-iteration bounds)
         new_spec: The new spec proposed by the LLM
+        floor_fraction: Minimum target as fraction of original (1.0 for user_override,
+            0.75 for llm_extraction). Defaults to config.global_target_floor_fraction.
+        config: Revision policy configuration
 
     Returns:
-        PolicyResult with valid flag, adjusted spec, and violation messages
+        PolicyResult with valid flag, adjusted spec, and structured violations
 
     Policy Rules (from DESIGN.md Section 8.3):
         - program_type: Never change → invalid
@@ -70,7 +74,7 @@ def enforce_revision_policy(
         - max_critical_fraction: Cannot increase beyond original, cannot delete → clamp/restore
         - target_amount: Must decrease or stay same → clamp
         - target_amount: Max 20% drop per iteration → clamp
-        - target_amount: Min 50% of original → invalid if below
+        - target_amount: Min floor_fraction of original → invalid if below
         - max_criticality: +0.1/iter max, ceiling 0.8, cannot delete → clamp/restore
         - min_leaseability_score: -0.1/iter max, floor 0.2, cannot delete → clamp/restore
 
@@ -78,7 +82,7 @@ def enforce_revision_policy(
         When previous filter value was None, a default baseline of 0.5 is used
         for computing bounded relaxation.
     """
-    violations: list[str] = []
+    violations: list[PolicyViolation] = []
     adjusted = new_spec.model_copy(deep=True)
 
     # =========================================================================
@@ -88,8 +92,15 @@ def enforce_revision_policy(
     # Program type must not change
     if new_spec.program_type != prev_spec.program_type:
         violations.append(
-            f"Cannot change program_type from {prev_spec.program_type.value} "
-            f"to {new_spec.program_type.value}"
+            PolicyViolation(
+                code=PolicyViolationCode.PROGRAM_TYPE_CHANGED,
+                detail=f"Cannot change program_type from {prev_spec.program_type.value} "
+                f"to {new_spec.program_type.value}",
+                field="program_type",
+                attempted=None,
+                limit=None,
+                adjusted_to=None,
+            )
         )
         return PolicyResult(valid=False, spec=None, violations=violations)
 
@@ -102,16 +113,30 @@ def enforce_revision_policy(
         if new_spec.hard_constraints.max_net_leverage is None:
             # Cannot delete a constraint that was originally set
             violations.append(
-                f"Cannot remove max_net_leverage constraint "
-                f"(original: {immutable_hard.max_net_leverage:.2f}x)"
+                PolicyViolation(
+                    code=PolicyViolationCode.CONSTRAINT_DELETED,
+                    detail=f"Cannot remove max_net_leverage constraint "
+                    f"(original: {immutable_hard.max_net_leverage:.2f}x)",
+                    field="max_net_leverage",
+                    attempted=None,
+                    limit=immutable_hard.max_net_leverage,
+                    adjusted_to=immutable_hard.max_net_leverage,
+                )
             )
             adjusted.hard_constraints = adjusted.hard_constraints.model_copy(
                 update={"max_net_leverage": immutable_hard.max_net_leverage}
             )
         elif new_spec.hard_constraints.max_net_leverage > immutable_hard.max_net_leverage:
             violations.append(
-                f"Cannot increase max_net_leverage beyond {immutable_hard.max_net_leverage:.2f}x "
-                f"(attempted {new_spec.hard_constraints.max_net_leverage:.2f}x)"
+                PolicyViolation(
+                    code=PolicyViolationCode.LEVERAGE_RELAXED,
+                    detail=f"Cannot increase max_net_leverage beyond {immutable_hard.max_net_leverage:.2f}x "
+                    f"(attempted {new_spec.hard_constraints.max_net_leverage:.2f}x)",
+                    field="max_net_leverage",
+                    attempted=new_spec.hard_constraints.max_net_leverage,
+                    limit=immutable_hard.max_net_leverage,
+                    adjusted_to=immutable_hard.max_net_leverage,
+                )
             )
             adjusted.hard_constraints = adjusted.hard_constraints.model_copy(
                 update={"max_net_leverage": immutable_hard.max_net_leverage}
@@ -122,16 +147,30 @@ def enforce_revision_policy(
         if new_spec.hard_constraints.min_fixed_charge_coverage is None:
             # Cannot delete a constraint that was originally set
             violations.append(
-                f"Cannot remove min_fixed_charge_coverage constraint "
-                f"(original: {immutable_hard.min_fixed_charge_coverage:.2f}x)"
+                PolicyViolation(
+                    code=PolicyViolationCode.CONSTRAINT_DELETED,
+                    detail=f"Cannot remove min_fixed_charge_coverage constraint "
+                    f"(original: {immutable_hard.min_fixed_charge_coverage:.2f}x)",
+                    field="min_fixed_charge_coverage",
+                    attempted=None,
+                    limit=immutable_hard.min_fixed_charge_coverage,
+                    adjusted_to=immutable_hard.min_fixed_charge_coverage,
+                )
             )
             adjusted.hard_constraints = adjusted.hard_constraints.model_copy(
                 update={"min_fixed_charge_coverage": immutable_hard.min_fixed_charge_coverage}
             )
         elif new_spec.hard_constraints.min_fixed_charge_coverage < immutable_hard.min_fixed_charge_coverage:
             violations.append(
-                f"Cannot decrease min_fixed_charge_coverage below {immutable_hard.min_fixed_charge_coverage:.2f}x "
-                f"(attempted {new_spec.hard_constraints.min_fixed_charge_coverage:.2f}x)"
+                PolicyViolation(
+                    code=PolicyViolationCode.FIXED_CHARGE_COVERAGE_RELAXED,
+                    detail=f"Cannot decrease min_fixed_charge_coverage below {immutable_hard.min_fixed_charge_coverage:.2f}x "
+                    f"(attempted {new_spec.hard_constraints.min_fixed_charge_coverage:.2f}x)",
+                    field="min_fixed_charge_coverage",
+                    attempted=new_spec.hard_constraints.min_fixed_charge_coverage,
+                    limit=immutable_hard.min_fixed_charge_coverage,
+                    adjusted_to=immutable_hard.min_fixed_charge_coverage,
+                )
             )
             adjusted.hard_constraints = adjusted.hard_constraints.model_copy(
                 update={"min_fixed_charge_coverage": immutable_hard.min_fixed_charge_coverage}
@@ -142,16 +181,30 @@ def enforce_revision_policy(
         if new_spec.hard_constraints.min_interest_coverage is None:
             # Cannot delete a constraint that was originally set
             violations.append(
-                f"Cannot remove min_interest_coverage constraint "
-                f"(original: {immutable_hard.min_interest_coverage:.2f}x)"
+                PolicyViolation(
+                    code=PolicyViolationCode.CONSTRAINT_DELETED,
+                    detail=f"Cannot remove min_interest_coverage constraint "
+                    f"(original: {immutable_hard.min_interest_coverage:.2f}x)",
+                    field="min_interest_coverage",
+                    attempted=None,
+                    limit=immutable_hard.min_interest_coverage,
+                    adjusted_to=immutable_hard.min_interest_coverage,
+                )
             )
             adjusted.hard_constraints = adjusted.hard_constraints.model_copy(
                 update={"min_interest_coverage": immutable_hard.min_interest_coverage}
             )
         elif new_spec.hard_constraints.min_interest_coverage < immutable_hard.min_interest_coverage:
             violations.append(
-                f"Cannot decrease min_interest_coverage below {immutable_hard.min_interest_coverage:.2f}x "
-                f"(attempted {new_spec.hard_constraints.min_interest_coverage:.2f}x)"
+                PolicyViolation(
+                    code=PolicyViolationCode.INTEREST_COVERAGE_RELAXED,
+                    detail=f"Cannot decrease min_interest_coverage below {immutable_hard.min_interest_coverage:.2f}x "
+                    f"(attempted {new_spec.hard_constraints.min_interest_coverage:.2f}x)",
+                    field="min_interest_coverage",
+                    attempted=new_spec.hard_constraints.min_interest_coverage,
+                    limit=immutable_hard.min_interest_coverage,
+                    adjusted_to=immutable_hard.min_interest_coverage,
+                )
             )
             adjusted.hard_constraints = adjusted.hard_constraints.model_copy(
                 update={"min_interest_coverage": immutable_hard.min_interest_coverage}
@@ -162,16 +215,30 @@ def enforce_revision_policy(
         if new_spec.hard_constraints.max_critical_fraction is None:
             # Cannot delete a constraint that was originally set
             violations.append(
-                f"Cannot remove max_critical_fraction constraint "
-                f"(original: {immutable_hard.max_critical_fraction:.1%})"
+                PolicyViolation(
+                    code=PolicyViolationCode.CONSTRAINT_DELETED,
+                    detail=f"Cannot remove max_critical_fraction constraint "
+                    f"(original: {immutable_hard.max_critical_fraction:.1%})",
+                    field="max_critical_fraction",
+                    attempted=None,
+                    limit=immutable_hard.max_critical_fraction,
+                    adjusted_to=immutable_hard.max_critical_fraction,
+                )
             )
             adjusted.hard_constraints = adjusted.hard_constraints.model_copy(
                 update={"max_critical_fraction": immutable_hard.max_critical_fraction}
             )
         elif new_spec.hard_constraints.max_critical_fraction > immutable_hard.max_critical_fraction:
             violations.append(
-                f"Cannot increase max_critical_fraction beyond {immutable_hard.max_critical_fraction:.1%} "
-                f"(attempted {new_spec.hard_constraints.max_critical_fraction:.1%})"
+                PolicyViolation(
+                    code=PolicyViolationCode.CRITICAL_FRACTION_RELAXED,
+                    detail=f"Cannot increase max_critical_fraction beyond {immutable_hard.max_critical_fraction:.1%} "
+                    f"(attempted {new_spec.hard_constraints.max_critical_fraction:.1%})",
+                    field="max_critical_fraction",
+                    attempted=new_spec.hard_constraints.max_critical_fraction,
+                    limit=immutable_hard.max_critical_fraction,
+                    adjusted_to=immutable_hard.max_critical_fraction,
+                )
             )
             adjusted.hard_constraints = adjusted.hard_constraints.model_copy(
                 update={"max_critical_fraction": immutable_hard.max_critical_fraction}
@@ -184,8 +251,15 @@ def enforce_revision_policy(
     # Target amount: must decrease or stay same
     if new_spec.target_amount > prev_spec.target_amount:
         violations.append(
-            f"target_amount cannot increase (was ${prev_spec.target_amount:,.0f}, "
-            f"attempted ${new_spec.target_amount:,.0f})"
+            PolicyViolation(
+                code=PolicyViolationCode.TARGET_INCREASED,
+                detail=f"target_amount cannot increase (was ${prev_spec.target_amount:,.0f}, "
+                f"attempted ${new_spec.target_amount:,.0f})",
+                field="target_amount",
+                attempted=new_spec.target_amount,
+                limit=prev_spec.target_amount,
+                adjusted_to=prev_spec.target_amount,
+            )
         )
         adjusted.target_amount = prev_spec.target_amount
 
@@ -194,17 +268,32 @@ def enforce_revision_policy(
     min_allowed_target = prev_spec.target_amount * (1.0 - max_drop_fraction)
     if adjusted.target_amount < min_allowed_target:
         violations.append(
-            f"target_amount cannot drop more than {max_drop_fraction:.0%} per iteration "
-            f"(min ${min_allowed_target:,.0f}, attempted ${new_spec.target_amount:,.0f})"
+            PolicyViolation(
+                code=PolicyViolationCode.TARGET_DROP_EXCEEDED,
+                detail=f"target_amount cannot drop more than {max_drop_fraction:.0%} per iteration "
+                f"(min ${min_allowed_target:,.0f}, attempted ${new_spec.target_amount:,.0f})",
+                field="target_amount",
+                attempted=new_spec.target_amount,
+                limit=min_allowed_target,
+                adjusted_to=min_allowed_target,
+            )
         )
         adjusted.target_amount = min_allowed_target
 
     # Target amount: global floor (enforces user intent)
-    global_floor = original_target * config.global_target_floor_fraction
+    # Use floor_fraction parameter instead of config default
+    global_floor = original_target * floor_fraction
     if adjusted.target_amount < global_floor:
         violations.append(
-            f"target_amount cannot go below {config.global_target_floor_fraction:.0%} of original "
-            f"(${global_floor:,.0f})"
+            PolicyViolation(
+                code=PolicyViolationCode.TARGET_BELOW_FLOOR,
+                detail=f"target_amount cannot go below {floor_fraction:.0%} of original "
+                f"(${global_floor:,.0f})",
+                field="target_amount",
+                attempted=adjusted.target_amount,
+                limit=global_floor,
+                adjusted_to=None,  # None because this is invalid, not clamped
+            )
         )
         return PolicyResult(valid=False, spec=None, violations=violations)
 
@@ -218,7 +307,14 @@ def enforce_revision_policy(
     if prev_crit is not None and new_spec.asset_filters.max_criticality is None:
         # Cannot delete a filter that was previously set
         violations.append(
-            f"Cannot remove max_criticality filter (previous: {prev_crit:.2f})"
+            PolicyViolation(
+                code=PolicyViolationCode.FILTER_DELETED,
+                detail=f"Cannot remove max_criticality filter (previous: {prev_crit:.2f})",
+                field="max_criticality",
+                attempted=None,
+                limit=prev_crit,
+                adjusted_to=prev_crit,
+            )
         )
         adjusted.asset_filters = adjusted.asset_filters.model_copy(
             update={"max_criticality": prev_crit}
@@ -234,8 +330,15 @@ def enforce_revision_policy(
 
         if new_spec.asset_filters.max_criticality > max_allowed:
             violations.append(
-                f"max_criticality can only increase by {config.max_criticality_step:.2f} per iteration "
-                f"(max {max_allowed:.2f}, attempted {new_spec.asset_filters.max_criticality:.2f})"
+                PolicyViolation(
+                    code=PolicyViolationCode.CRITICALITY_STEP_EXCEEDED,
+                    detail=f"max_criticality can only increase by {config.max_criticality_step:.2f} per iteration "
+                    f"(max {max_allowed:.2f}, attempted {new_spec.asset_filters.max_criticality:.2f})",
+                    field="max_criticality",
+                    attempted=new_spec.asset_filters.max_criticality,
+                    limit=max_allowed,
+                    adjusted_to=max_allowed,
+                )
             )
             adjusted.asset_filters = adjusted.asset_filters.model_copy(
                 update={"max_criticality": max_allowed}
@@ -254,7 +357,14 @@ def enforce_revision_policy(
     if prev_lease is not None and new_spec.asset_filters.min_leaseability_score is None:
         # Cannot delete a filter that was previously set
         violations.append(
-            f"Cannot remove min_leaseability_score filter (previous: {prev_lease:.2f})"
+            PolicyViolation(
+                code=PolicyViolationCode.FILTER_DELETED,
+                detail=f"Cannot remove min_leaseability_score filter (previous: {prev_lease:.2f})",
+                field="min_leaseability_score",
+                attempted=None,
+                limit=prev_lease,
+                adjusted_to=prev_lease,
+            )
         )
         adjusted.asset_filters = adjusted.asset_filters.model_copy(
             update={"min_leaseability_score": prev_lease}
@@ -270,8 +380,15 @@ def enforce_revision_policy(
 
         if new_spec.asset_filters.min_leaseability_score < min_allowed:
             violations.append(
-                f"min_leaseability_score can only decrease by {config.min_leaseability_step:.2f} per iteration "
-                f"(min {min_allowed:.2f}, attempted {new_spec.asset_filters.min_leaseability_score:.2f})"
+                PolicyViolation(
+                    code=PolicyViolationCode.LEASEABILITY_STEP_EXCEEDED,
+                    detail=f"min_leaseability_score can only decrease by {config.min_leaseability_step:.2f} per iteration "
+                    f"(min {min_allowed:.2f}, attempted {new_spec.asset_filters.min_leaseability_score:.2f})",
+                    field="min_leaseability_score",
+                    attempted=new_spec.asset_filters.min_leaseability_score,
+                    limit=min_allowed,
+                    adjusted_to=min_allowed,
+                )
             )
             adjusted.asset_filters = adjusted.asset_filters.model_copy(
                 update={"min_leaseability_score": min_allowed}
