@@ -9,7 +9,7 @@ Defined in DESIGN.md Section 8.2-8.3.
 Policy Rules:
 - program_type: Never change (immutable)
 - hard_constraints: Cannot relax beyond original (immutable), cannot delete if originally set
-- target_amount: Can only decrease, max 20% per iteration, min 50% of original
+- target_amount: Can only decrease, max 20% per iteration, min 75% of original
 - asset_filters: Bounded relaxation per iteration (max_criticality, min_leaseability_score only)
   - Cannot delete filter if previously set (None not allowed if was numeric)
   - Default baseline of 0.5 used when previous filter was None
@@ -19,6 +19,7 @@ Policy Rules:
 from dataclasses import dataclass
 from typing import Optional
 
+from app.config import DEFAULT_REVISION_POLICY_CONFIG, RevisionPolicyConfig
 from app.models import HardConstraints, SelectorSpec
 
 
@@ -43,6 +44,7 @@ def enforce_revision_policy(
     original_target: float,
     prev_spec: SelectorSpec,
     new_spec: SelectorSpec,
+    config: RevisionPolicyConfig = DEFAULT_REVISION_POLICY_CONFIG,
 ) -> PolicyResult:
     """
     Enforce constraints on what the LLM may change during revision.
@@ -187,20 +189,22 @@ def enforce_revision_policy(
         )
         adjusted.target_amount = prev_spec.target_amount
 
-    # Target amount: bounded per-iteration reduction (max 20% drop)
-    min_allowed_target = prev_spec.target_amount * 0.80
+    # Target amount: bounded per-iteration reduction
+    max_drop_fraction = config.max_per_iteration_target_drop_fraction
+    min_allowed_target = prev_spec.target_amount * (1.0 - max_drop_fraction)
     if adjusted.target_amount < min_allowed_target:
         violations.append(
-            f"target_amount cannot drop more than 20% per iteration "
+            f"target_amount cannot drop more than {max_drop_fraction:.0%} per iteration "
             f"(min ${min_allowed_target:,.0f}, attempted ${new_spec.target_amount:,.0f})"
         )
         adjusted.target_amount = min_allowed_target
 
-    # Target amount: global floor (50% of original)
-    global_floor = original_target * 0.50
+    # Target amount: global floor (enforces user intent)
+    global_floor = original_target * config.global_target_floor_fraction
     if adjusted.target_amount < global_floor:
         violations.append(
-            f"target_amount cannot go below 50% of original (${global_floor:,.0f})"
+            f"target_amount cannot go below {config.global_target_floor_fraction:.0%} of original "
+            f"(${global_floor:,.0f})"
         )
         return PolicyResult(valid=False, spec=None, violations=violations)
 
@@ -208,7 +212,7 @@ def enforce_revision_policy(
     # BOUNDED FILTER RELAXATION (clamp if exceeded)
     # =========================================================================
 
-    # max_criticality: can increase by at most 0.1 per iteration, never above 0.8
+    # max_criticality: bounded increase per iteration with absolute ceiling
     # Cannot delete if previously set
     prev_crit = prev_spec.asset_filters.max_criticality
     if prev_crit is not None and new_spec.asset_filters.max_criticality is None:
@@ -221,14 +225,17 @@ def enforce_revision_policy(
         )
     elif new_spec.asset_filters.max_criticality is not None:
         if prev_crit is None:
-            prev_crit = 0.5  # Default baseline if not previously set
+            prev_crit = config.max_criticality_default_baseline
 
-        max_allowed = min(prev_crit + 0.1, 0.8)
+        max_allowed = min(
+            prev_crit + config.max_criticality_step,
+            config.max_criticality_ceiling,
+        )
 
         if new_spec.asset_filters.max_criticality > max_allowed:
             violations.append(
-                f"max_criticality can only increase by 0.1 per iteration (max {max_allowed:.2f}, "
-                f"attempted {new_spec.asset_filters.max_criticality:.2f})"
+                f"max_criticality can only increase by {config.max_criticality_step:.2f} per iteration "
+                f"(max {max_allowed:.2f}, attempted {new_spec.asset_filters.max_criticality:.2f})"
             )
             adjusted.asset_filters = adjusted.asset_filters.model_copy(
                 update={"max_criticality": max_allowed}
@@ -236,12 +243,12 @@ def enforce_revision_policy(
 
         # Absolute ceiling
         if adjusted.asset_filters.max_criticality is not None:
-            if adjusted.asset_filters.max_criticality > 0.8:
+            if adjusted.asset_filters.max_criticality > config.max_criticality_ceiling:
                 adjusted.asset_filters = adjusted.asset_filters.model_copy(
-                    update={"max_criticality": 0.8}
+                    update={"max_criticality": config.max_criticality_ceiling}
                 )
 
-    # min_leaseability_score: can decrease by at most 0.1 per iteration, never below 0.2
+    # min_leaseability_score: bounded decrease per iteration with absolute floor
     # Cannot delete if previously set
     prev_lease = prev_spec.asset_filters.min_leaseability_score
     if prev_lease is not None and new_spec.asset_filters.min_leaseability_score is None:
@@ -254,14 +261,17 @@ def enforce_revision_policy(
         )
     elif new_spec.asset_filters.min_leaseability_score is not None:
         if prev_lease is None:
-            prev_lease = 0.5  # Default baseline if not previously set
+            prev_lease = config.min_leaseability_default_baseline
 
-        min_allowed = max(prev_lease - 0.1, 0.2)
+        min_allowed = max(
+            prev_lease - config.min_leaseability_step,
+            config.min_leaseability_floor,
+        )
 
         if new_spec.asset_filters.min_leaseability_score < min_allowed:
             violations.append(
-                f"min_leaseability_score can only decrease by 0.1 per iteration (min {min_allowed:.2f}, "
-                f"attempted {new_spec.asset_filters.min_leaseability_score:.2f})"
+                f"min_leaseability_score can only decrease by {config.min_leaseability_step:.2f} per iteration "
+                f"(min {min_allowed:.2f}, attempted {new_spec.asset_filters.min_leaseability_score:.2f})"
             )
             adjusted.asset_filters = adjusted.asset_filters.model_copy(
                 update={"min_leaseability_score": min_allowed}
@@ -269,9 +279,9 @@ def enforce_revision_policy(
 
         # Absolute floor
         if adjusted.asset_filters.min_leaseability_score is not None:
-            if adjusted.asset_filters.min_leaseability_score < 0.2:
+            if adjusted.asset_filters.min_leaseability_score < config.min_leaseability_floor:
                 adjusted.asset_filters = adjusted.asset_filters.model_copy(
-                    update={"min_leaseability_score": 0.2}
+                    update={"min_leaseability_score": config.min_leaseability_floor}
                 )
 
     # =========================================================================

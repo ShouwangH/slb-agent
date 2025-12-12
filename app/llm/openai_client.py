@@ -121,7 +121,7 @@ class OpenAILLMClient:
                 ],
                 response_format=response_model,
                 temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
+                max_completion_tokens=self.config.max_tokens,
             )
 
             parsed = response.choices[0].message.parsed
@@ -164,7 +164,7 @@ class OpenAILLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
+                max_completion_tokens=self.config.max_tokens,
             )
 
             content = response.choices[0].message.content

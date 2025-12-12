@@ -471,13 +471,13 @@ class TestTargetAmountMonotonicity:
         # Should not have per-iteration violation
         assert not any("20%" in v for v in result.violations)
 
-    def test_target_below_50_percent_floor_invalid(
+    def test_target_below_75_percent_floor_invalid(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
     ) -> None:
-        """Target below 50% of original is invalid."""
+        """Target below 75% of original is invalid (global floor)."""
         # Start with a lower target so we can test the floor
-        prev_spec = make_spec(target_amount=60_000_000)  # Already at 60M
-        new_spec = make_spec(target_amount=40_000_000)  # Try to go to 40M (40% of original 100M)
+        prev_spec = make_spec(target_amount=80_000_000)  # Already at 80M
+        new_spec = make_spec(target_amount=70_000_000)  # Try to go to 70M (70% of original 100M)
 
         result = enforce_revision_policy(
             base_hard_constraints,
@@ -488,14 +488,14 @@ class TestTargetAmountMonotonicity:
 
         assert result.valid is False
         assert result.spec is None
-        assert any("50%" in v for v in result.violations)
+        assert any("75%" in v for v in result.violations)
 
-    def test_target_at_50_percent_floor_allowed(
+    def test_target_at_75_percent_floor_allowed(
         self, base_hard_constraints: HardConstraints, base_spec: SelectorSpec
     ) -> None:
-        """Target at exactly 50% of original is allowed."""
-        prev_spec = make_spec(target_amount=60_000_000)
-        new_spec = make_spec(target_amount=50_000_000)  # Exactly 50% of original
+        """Target at exactly 75% of original is allowed."""
+        prev_spec = make_spec(target_amount=80_000_000)
+        new_spec = make_spec(target_amount=75_000_000)  # Exactly 75% of original
 
         result = enforce_revision_policy(
             base_hard_constraints,
@@ -504,14 +504,14 @@ class TestTargetAmountMonotonicity:
             new_spec=new_spec,
         )
 
-        # Should be valid since 50M is exactly 50% of 100M and within 20% of 60M
+        # Should be valid since 75M is exactly 75% of 100M and within 20% of 80M
         assert result.valid is True
         assert result.spec is not None
 
     def test_multiple_iterations_compound(
         self, base_hard_constraints: HardConstraints
     ) -> None:
-        """Test that iterations compound correctly (100 -> 80 -> 64)."""
+        """Test that iterations compound correctly but respect 75% floor (100 -> 80 -> 75)."""
         # First iteration: 100M -> 80M (20% drop)
         prev_spec_1 = make_spec(target_amount=100_000_000)
         new_spec_1 = make_spec(target_amount=80_000_000)
@@ -527,9 +527,9 @@ class TestTargetAmountMonotonicity:
         assert result_1.spec is not None
         assert result_1.spec.target_amount == 80_000_000
 
-        # Second iteration: 80M -> 64M (20% drop)
+        # Second iteration: 80M -> 64M attempted, but clamped to 75M (75% floor)
         prev_spec_2 = make_spec(target_amount=80_000_000)
-        new_spec_2 = make_spec(target_amount=64_000_000)
+        new_spec_2 = make_spec(target_amount=64_000_000)  # 20% drop from 80M
 
         result_2 = enforce_revision_policy(
             base_hard_constraints,
@@ -538,9 +538,10 @@ class TestTargetAmountMonotonicity:
             new_spec=new_spec_2,
         )
 
-        assert result_2.valid is True
-        assert result_2.spec is not None
-        assert result_2.spec.target_amount == 64_000_000
+        # This should now fail because 64M is below 75% of original
+        assert result_2.valid is False
+        assert result_2.spec is None
+        assert any("75%" in v for v in result_2.violations)
 
 
 # =============================================================================
@@ -901,10 +902,10 @@ class TestCombinedScenarios:
         self, base_hard_constraints: HardConstraints
     ) -> None:
         """Target is clamped first, then floor is checked."""
-        # If at 55M and trying to go to 30M:
-        # - First clamp to 55M * 0.8 = 44M (20% rule)
-        # - Then check 44M < 50M (50% of 100M) → invalid
-        prev_spec = make_spec(target_amount=55_000_000)
+        # If at 80M and trying to go to 30M:
+        # - First clamp to 80M * 0.8 = 64M (20% rule)
+        # - Then check 64M < 75M (75% of 100M) → invalid
+        prev_spec = make_spec(target_amount=80_000_000)
         new_spec = make_spec(target_amount=30_000_000)
 
         result = enforce_revision_policy(
@@ -916,4 +917,4 @@ class TestCombinedScenarios:
 
         assert result.valid is False
         assert result.spec is None
-        assert any("50%" in v for v in result.violations)
+        assert any("75%" in v for v in result.violations)

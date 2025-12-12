@@ -50,7 +50,7 @@ def summarize_assets(assets: list[Asset]) -> str:
     Generate summary of assets for LLM context.
 
     Provides high-level statistics about the asset pool so the LLM
-    can generate appropriate specs without seeing every asset.
+    can understand asset types and portfolio composition.
 
     Args:
         assets: List of assets in the portfolio
@@ -160,6 +160,26 @@ def run_program(
     )
 
     # =========================================================================
+    # Step 3b: Clamp spec to explicit numeric overrides
+    # =========================================================================
+    #
+    # This prevents the LLM from "helpfully" reducing user-provided targets
+    # during initial spec generation. If the user says "raise $500M", we
+    # enforce that exact value here, regardless of what the LLM inferred.
+    #
+    # The revision loop can later adjust downward within policy bounds if
+    # the target proves infeasible.
+
+    if request.target_amount_override is not None:
+        initial_spec.target_amount = request.target_amount_override
+
+    if request.max_leverage_override is not None:
+        initial_spec.hard_constraints.max_net_leverage = request.max_leverage_override
+
+    if request.min_coverage_override is not None:
+        initial_spec.hard_constraints.min_fixed_charge_coverage = request.min_coverage_override
+
+    # =========================================================================
     # Step 4: Validate spec
     # =========================================================================
 
@@ -170,9 +190,16 @@ def run_program(
     # =========================================================================
     # Step 5: Capture immutable hard constraints
     # =========================================================================
+    #
+    # IMPORTANT: original_target is now anchored on the clamped value
+    # (i.e., the override if present, or LLM output if not).
+    # The revision policy uses this as the floor reference.
 
     immutable_hard = initial_spec.hard_constraints.model_copy(deep=True)
     original_target = initial_spec.target_amount
+
+    # Defensive assertion: original_target must be positive
+    assert original_target > 0, "original_target must be positive after clamping"
 
     # =========================================================================
     # Step 6: Agentic loop

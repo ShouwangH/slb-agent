@@ -57,6 +57,35 @@ class SelectionStatus(str, Enum):
     NUMERIC_ERROR = "numeric_error"
 
 
+class PolicyViolationCode(str, Enum):
+    """
+    Codes for revision policy violations.
+
+    These represent deterministic bounds enforced by the revision policy,
+    not LLM decisions. Used for audit trace visibility.
+    """
+
+    # Target violations
+    TARGET_INCREASED = "target_increased"
+    TARGET_DROP_EXCEEDED = "target_drop_exceeded"
+    TARGET_BELOW_FLOOR = "target_below_floor"
+
+    # Hard constraint violations (attempts to relax immutable constraints)
+    LEVERAGE_RELAXED = "leverage_relaxed"
+    INTEREST_COVERAGE_RELAXED = "interest_coverage_relaxed"
+    FIXED_CHARGE_COVERAGE_RELAXED = "fixed_charge_coverage_relaxed"
+    CRITICAL_FRACTION_RELAXED = "critical_fraction_relaxed"
+    CONSTRAINT_DELETED = "constraint_deleted"
+
+    # Filter violations (bounded relaxation exceeded)
+    CRITICALITY_STEP_EXCEEDED = "criticality_step_exceeded"
+    LEASEABILITY_STEP_EXCEEDED = "leaseability_step_exceeded"
+    FILTER_DELETED = "filter_deleted"
+
+    # Immutable field violations
+    PROGRAM_TYPE_CHANGED = "program_type_changed"
+
+
 # =============================================================================
 # Input Models (Section 4.2-4.3)
 # =============================================================================
@@ -290,6 +319,24 @@ class ConstraintViolation(BaseModel):
     limit: float = Field(..., description="Constraint threshold")
 
 
+class PolicyViolation(BaseModel):
+    """
+    Structured policy violation from the revision policy.
+
+    Replaces unstructured strings for better UI rendering and type safety.
+    These represent deterministic bounds enforced by policy, not LLM decisions.
+    """
+
+    code: PolicyViolationCode = Field(..., description="Violation type code")
+    detail: str = Field(..., description="Human-readable explanation")
+    field: str = Field(..., description="Which field was violated")
+    attempted: Optional[float] = Field(None, description="What LLM tried to set")
+    limit: Optional[float] = Field(None, description="The bound that was enforced")
+    adjusted_to: Optional[float] = Field(
+        None, description="What we clamped it to (None if invalid/rejected)"
+    )
+
+
 class AssetSLBMetrics(BaseModel):
     """Per-asset SLB economics computed by the engine."""
 
@@ -394,6 +441,148 @@ class Explanation(BaseModel):
 
 
 # =============================================================================
+# Audit Trace Models (for orchestration visibility)
+# =============================================================================
+
+
+class SpecSnapshot(BaseModel):
+    """
+    Lightweight snapshot of spec fields relevant to audit trail.
+
+    IMPORTANT: Use from_spec() factory to create. Never construct directly
+    in orchestrator code - this ensures field alignment.
+    """
+
+    target_amount: float = Field(..., description="Target SLB proceeds")
+
+    # Asset filters (soft, can be relaxed within bounds)
+    max_criticality: Optional[float] = Field(None, description="Ceiling for eligibility")
+    min_leaseability_score: Optional[float] = Field(None, description="Floor for eligibility")
+
+    # Hard constraints (immutable after initial spec)
+    max_net_leverage: Optional[float] = Field(None, description="Max net_debt / ebitda")
+    min_interest_coverage: Optional[float] = Field(None, description="Min ebitda / interest")
+    min_fixed_charge_coverage: Optional[float] = Field(
+        None, description="Min ebitda / (interest + leases)"
+    )
+    max_critical_fraction: Optional[float] = Field(None, description="Critical NOI fraction limit")
+
+    @classmethod
+    def from_spec(cls, spec: "SelectorSpec") -> "SpecSnapshot":
+        """
+        Single derivation point from SelectorSpec.
+
+        This is the ONLY way to create SpecSnapshot. Do not call __init__ directly.
+        """
+        return cls(
+            target_amount=spec.target_amount,
+            max_criticality=spec.asset_filters.max_criticality,
+            min_leaseability_score=spec.asset_filters.min_leaseability_score,
+            max_net_leverage=spec.hard_constraints.max_net_leverage,
+            min_interest_coverage=spec.hard_constraints.min_interest_coverage,
+            min_fixed_charge_coverage=spec.hard_constraints.min_fixed_charge_coverage,
+            max_critical_fraction=spec.hard_constraints.max_critical_fraction,
+        )
+
+
+class OutcomeSnapshot(BaseModel):
+    """
+    Lightweight snapshot of outcome fields relevant to audit trail.
+
+    IMPORTANT: Use from_outcome() factory to create. Never construct directly
+    in orchestrator code - this ensures field alignment with ProgramOutcome.
+    """
+
+    status: SelectionStatus = Field(..., description="ok / infeasible / numeric_error")
+    proceeds: float = Field(..., ge=0, description="Total SLB proceeds")
+    leverage_after: Optional[float] = Field(None, description="Post-transaction net leverage")
+    interest_coverage_after: Optional[float] = Field(
+        None, description="Post-transaction interest coverage"
+    )
+    fixed_charge_coverage_after: Optional[float] = Field(
+        None, description="Post-transaction fixed charge coverage"
+    )
+    critical_fraction: float = Field(0.0, ge=0, le=1, description="Critical NOI fraction")
+    violations: list[ConstraintViolation] = Field(
+        default_factory=list, description="Engine constraint violations"
+    )
+
+    @classmethod
+    def from_outcome(cls, outcome: "ProgramOutcome") -> "OutcomeSnapshot":
+        """
+        Single derivation point from ProgramOutcome.
+
+        This is the ONLY way to create OutcomeSnapshot. Do not call __init__ directly.
+        """
+        return cls(
+            status=outcome.status,
+            proceeds=outcome.proceeds,
+            leverage_after=outcome.leverage_after,
+            interest_coverage_after=outcome.interest_coverage_after,
+            fixed_charge_coverage_after=outcome.fixed_charge_coverage_after,
+            critical_fraction=outcome.critical_fraction,
+            violations=outcome.violations,
+        )
+
+
+class AuditTraceEntry(BaseModel):
+    """
+    Single iteration in the orchestration audit trail.
+
+    Records the spec used, engine outcome, and any policy violations
+    for one iteration of the agentic loop.
+    """
+
+    iteration: int = Field(..., ge=0, description="0 = initial, 1+ = revisions")
+    phase: Literal["initial", "revision"] = Field(..., description="Loop phase")
+
+    # Spec state for this iteration (use SpecSnapshot.from_spec())
+    spec_snapshot: SpecSnapshot = Field(..., description="Spec used in this iteration")
+
+    # Engine result (use OutcomeSnapshot.from_outcome())
+    outcome_snapshot: OutcomeSnapshot = Field(..., description="Engine result")
+
+    # Policy enforcement - structured violations
+    policy_violations: list[PolicyViolation] = Field(
+        default_factory=list, description="Policy violations (deterministic bounds)"
+    )
+
+    # Target tracking
+    target_before: Optional[float] = Field(
+        None, description="Target before this iteration (None for initial)"
+    )
+    target_after: float = Field(..., description="Target used in this iteration")
+
+    timestamp: str = Field(..., description="ISO format timestamp")
+
+
+class AuditTrace(BaseModel):
+    """
+    Complete audit trail for an orchestration run.
+
+    Tracks all iterations, numeric invariants, and determinism boundaries.
+    """
+
+    entries: list[AuditTraceEntry] = Field(
+        default_factory=list, description="Iteration entries"
+    )
+
+    # Numeric invariants (captured once at start)
+    original_target: float = Field(..., gt=0, description="Original target amount")
+    floor_target: float = Field(..., ge=0, description="Minimum allowed target")
+    floor_fraction: float = Field(
+        ..., ge=0, le=1, description="1.0 for user_override, 0.75 for llm_extraction"
+    )
+    target_source: Literal["user_override", "llm_extraction"] = Field(
+        ..., description="Where the target came from"
+    )
+
+    # Timing
+    started_at: str = Field(..., description="ISO format start timestamp")
+    completed_at: Optional[str] = Field(None, description="ISO format completion timestamp")
+
+
+# =============================================================================
 # API Models (Section 4.7)
 # =============================================================================
 
@@ -406,6 +595,20 @@ class ProgramRequest(BaseModel):
     program_type: ProgramType
     program_description: str = Field(..., min_length=1)
 
+    # Explicit numeric overrides (prevent LLM from adjusting user-provided numbers)
+    target_amount_override: Optional[float] = Field(
+        None, gt=0, description="Explicit target raise amount in dollars (overrides LLM inference)"
+    )
+    max_leverage_override: Optional[float] = Field(
+        None, gt=0, lt=10, description="Explicit max net leverage constraint (overrides LLM inference)"
+    )
+    min_coverage_override: Optional[float] = Field(
+        None,
+        gt=0,
+        lt=20,
+        description="Explicit min fixed charge coverage constraint (overrides LLM inference)",
+    )
+
 
 class ProgramResponse(BaseModel):
     """Response body for POST /program endpoint (Section 4.7)."""
@@ -413,6 +616,9 @@ class ProgramResponse(BaseModel):
     selector_spec: SelectorSpec = Field(..., description="The spec used for selection")
     outcome: ProgramOutcome = Field(..., description="Selection results and metrics")
     explanation: Explanation = Field(..., description="Structured explanation with summary")
+    audit_trace: Optional[AuditTrace] = Field(
+        None, description="Audit trail of orchestration loop (None until PR3 integrates)"
+    )
 
 
 class ErrorResponse(BaseModel):

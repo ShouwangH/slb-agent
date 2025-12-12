@@ -47,6 +47,26 @@ app = FastAPI(
 # =============================================================================
 
 
+@app.get(
+    "/health",
+    summary="Health check",
+    description="Returns service health status",
+    tags=["System"],
+)
+def health_check() -> dict:
+    """
+    Health check endpoint.
+
+    Returns basic service status. Can be extended with additional checks
+    (database connectivity, LLM availability, etc.) in production.
+    """
+    return {
+        "status": "healthy",
+        "service": "SLB Agent API",
+        "version": "1.0.0",
+    }
+
+
 @app.post(
     "/program",
     response_model=ProgramResponse,

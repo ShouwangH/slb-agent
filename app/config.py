@@ -126,6 +126,95 @@ DEFAULT_ENGINE_CONFIG = EngineConfig()
 
 
 # =============================================================================
+# Revision Policy Configuration
+# =============================================================================
+
+
+class RevisionPolicyConfig(BaseModel):
+    """
+    Configuration for the revision policy that constrains LLM spec changes.
+
+    These constants control how much the LLM can adjust spec parameters during
+    the agentic revision loop, ensuring bounded exploration.
+    """
+
+    # Target amount bounds
+    global_target_floor_fraction: float = Field(
+        default=0.75,
+        gt=0,
+        le=1,
+        description="Minimum target as fraction of original (prevents deviation from user intent)",
+    )
+    max_per_iteration_target_drop_fraction: float = Field(
+        default=0.20,
+        gt=0,
+        lt=1,
+        description="Maximum target reduction per iteration (ensures gradual exploration)",
+    )
+
+    # Asset filter relaxation bounds
+    max_criticality_step: float = Field(
+        default=0.1, gt=0, description="Max increase in max_criticality per iteration"
+    )
+    max_criticality_ceiling: float = Field(
+        default=0.8, gt=0, le=1, description="Absolute ceiling for max_criticality"
+    )
+    max_criticality_default_baseline: float = Field(
+        default=0.5,
+        gt=0,
+        le=1,
+        description="Baseline for max_criticality when previous value was None",
+    )
+
+    min_leaseability_step: float = Field(
+        default=0.1, gt=0, description="Max decrease in min_leaseability_score per iteration"
+    )
+    min_leaseability_floor: float = Field(
+        default=0.2, ge=0, lt=1, description="Absolute floor for min_leaseability_score"
+    )
+    min_leaseability_default_baseline: float = Field(
+        default=0.5,
+        ge=0,
+        le=1,
+        description="Baseline for min_leaseability_score when previous value was None",
+    )
+
+
+DEFAULT_REVISION_POLICY_CONFIG = RevisionPolicyConfig()
+
+
+# =============================================================================
+# Prompt / LLM Spec Generation Configuration
+# =============================================================================
+
+
+class PromptConfig(BaseModel):
+    """
+    Configuration for prompt-based spec generation defaults.
+
+    Controls fallback values when the LLM must infer parameters not
+    explicitly stated in the program description.
+    """
+
+    # Default target amount estimation (when user doesn't specify)
+    default_target_fraction_of_portfolio: float = Field(
+        default=0.175,
+        gt=0,
+        lt=1,
+        description="Estimated target as fraction of portfolio value (15-20% typical)",
+    )
+    default_portfolio_cap_rate: float = Field(
+        default=0.065,
+        gt=0,
+        lt=1,
+        description="Cap rate for estimating portfolio value from NOI when needed",
+    )
+
+
+DEFAULT_PROMPT_CONFIG = PromptConfig()
+
+
+# =============================================================================
 # LLM Configuration (Section 9.1)
 # =============================================================================
 
@@ -138,8 +227,8 @@ class LLMConfig(BaseModel):
     """
 
     model: str = Field(
-        default="gpt-4o-mini",
-        description="OpenAI model to use (gpt-4o-mini for dev, gpt-4o for production)",
+        default="gpt-5.2",
+        description="OpenAI model to use (gpt-4o is the latest and most capable)",
     )
     temperature: float = Field(
         default=0.2,
