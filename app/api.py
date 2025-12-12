@@ -13,6 +13,15 @@ Endpoints:
 
 import logging
 import os
+from pathlib import Path
+
+# Load .env file if it exists
+from dotenv import load_dotenv
+
+env_path = Path(__file__).parent.parent / ".env"
+if env_path.exists():
+    load_dotenv(env_path)
+    print(f"[ENV] Loaded .env from {env_path}")
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -40,7 +49,9 @@ def get_llm_client() -> LLMClient:
     Returns OpenAILLMClient if OPENAI_API_KEY is set, otherwise MockLLMClient.
     """
     if os.environ.get("OPENAI_API_KEY"):
+        print("[LLM] Using OpenAILLMClient (OPENAI_API_KEY is set)")
         return OpenAILLMClient()
+    print("[LLM] Using MockLLMClient (no OPENAI_API_KEY)")
     return MockLLMClient()
 
 # =============================================================================

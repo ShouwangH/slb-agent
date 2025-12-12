@@ -595,9 +595,11 @@ class ProgramRequest(BaseModel):
     program_type: ProgramType
     program_description: str = Field(..., min_length=1)
 
-    # Explicit numeric overrides (prevent LLM from adjusting user-provided numbers)
-    target_amount_override: Optional[float] = Field(
-        None, gt=0, description="Explicit target raise amount in dollars (overrides LLM inference)"
+    # Explicit numeric overrides
+    floor_override: Optional[float] = Field(
+        None,
+        gt=0,
+        description="Minimum acceptable target amount. If not set, LLM-extracted target is sacred (floor = target).",
     )
     max_leverage_override: Optional[float] = Field(
         None, gt=0, lt=10, description="Explicit max net leverage constraint (overrides LLM inference)"

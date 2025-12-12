@@ -167,18 +167,12 @@ def run_program(
     )
 
     # =========================================================================
-    # Step 3b: Clamp spec to explicit numeric overrides
+    # Step 3b: Apply explicit constraint overrides
     # =========================================================================
     #
-    # This prevents the LLM from "helpfully" reducing user-provided targets
-    # during initial spec generation. If the user says "raise $500M", we
-    # enforce that exact value here, regardless of what the LLM inferred.
-    #
-    # The revision loop can later adjust downward within policy bounds if
-    # the target proves infeasible.
-
-    if request.target_amount_override is not None:
-        initial_spec.target_amount = request.target_amount_override
+    # Note: target_amount is NOT overridden here - the LLM-extracted target
+    # from the natural language description is used directly. The user can
+    # optionally specify a floor_override to allow flexibility.
 
     if request.max_leverage_override is not None:
         initial_spec.hard_constraints.max_net_leverage = request.max_leverage_override
@@ -190,23 +184,30 @@ def run_program(
     # Step 3c: Determine target source and floor fraction
     # =========================================================================
     #
-    # Clear rule: target_source is based ONLY on whether override was provided
-    # NOT on whether LLM extraction succeeded or matched the override.
+    # New semantics:
+    # - Target from NL description is ALWAYS sacred by default (floor = 100%)
+    # - User can optionally specify floor_override to allow flexibility
     #
-    # - user_override: User explicitly provided target_amount_override
-    #   → floor_fraction = 1.0 (target is sacred, cannot be reduced)
-    # - llm_extraction: No override, LLM inferred the target
-    #   → floor_fraction = 0.75 (allow reduction down to 75% of original)
+    # Examples:
+    # - No floor_override: target is sacred, revision cannot reduce it
+    # - floor_override = $8M with target = $10M: allows reduction to $8M
 
-    target_source: Literal["user_override", "llm_extraction"]
+    target_source: Literal["user_override", "llm_extraction"] = "llm_extraction"
     floor_fraction: float
 
-    if request.target_amount_override is not None:
-        target_source = "user_override"
-        floor_fraction = 1.0
+    if request.floor_override is not None:
+        # User specified a custom floor - validate it's <= target
+        if request.floor_override > initial_spec.target_amount:
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=400,
+                detail=f"Floor override ({request.floor_override:,.0f}) cannot exceed target amount ({initial_spec.target_amount:,.0f})",
+            )
+        floor_fraction = request.floor_override / initial_spec.target_amount
     else:
-        target_source = "llm_extraction"
-        floor_fraction = 0.75
+        # No floor override - target is sacred (cannot reduce)
+        floor_fraction = 1.0
 
     # =========================================================================
     # Step 4: Validate spec
