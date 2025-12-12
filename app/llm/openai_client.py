@@ -10,10 +10,12 @@ Requires OPENAI_API_KEY environment variable to be set.
 import os
 from typing import Optional, TypeVar
 
+import openai
 from openai import OpenAI
 from pydantic import BaseModel
 
 from app.config import DEFAULT_LLM_CONFIG, LLMConfig
+from app.exceptions import InfrastructureError
 from app.llm.prompts import (
     format_explanation_system,
     format_explanation_user,
@@ -110,7 +112,8 @@ class OpenAILLMClient:
             Parsed response as the specified model type
 
         Raises:
-            LLMError: If API call fails or response cannot be parsed
+            InfrastructureError: If API is unreachable or returns 5xx
+            LLMError: If response cannot be parsed or other API errors
         """
         try:
             response = self.client.beta.chat.completions.parse(
@@ -130,10 +133,20 @@ class OpenAILLMClient:
 
             return parsed
 
+        except openai.APIConnectionError as e:
+            # Network-level failure - infrastructure error
+            raise InfrastructureError(f"Cannot reach OpenAI API: {e}") from e
+        except openai.APIStatusError as e:
+            # API returned an error status
+            if e.status_code >= 500:
+                # Server error - infrastructure error
+                raise InfrastructureError(f"OpenAI API error ({e.status_code}): {e}") from e
+            # 4xx errors are likely our fault (bad request, etc.)
+            raise LLMError(f"OpenAI API call failed ({e.status_code}): {e}") from e
+        except LLMError:
+            raise
         except Exception as e:
-            # Wrap all errors in LLMError for consistent handling
-            if isinstance(e, LLMError):
-                raise
+            # Wrap unexpected errors in LLMError
             raise LLMError(f"OpenAI API call failed: {e}") from e
 
     def _call_text(
@@ -154,6 +167,7 @@ class OpenAILLMClient:
             Text response content
 
         Raises:
+            InfrastructureError: If API is unreachable or returns 5xx
             LLMError: If API call fails
         """
         try:
@@ -173,9 +187,20 @@ class OpenAILLMClient:
 
             return content
 
+        except openai.APIConnectionError as e:
+            # Network-level failure - infrastructure error
+            raise InfrastructureError(f"Cannot reach OpenAI API: {e}") from e
+        except openai.APIStatusError as e:
+            # API returned an error status
+            if e.status_code >= 500:
+                # Server error - infrastructure error
+                raise InfrastructureError(f"OpenAI API error ({e.status_code}): {e}") from e
+            # 4xx errors are likely our fault (bad request, etc.)
+            raise LLMError(f"OpenAI API call failed ({e.status_code}): {e}") from e
+        except LLMError:
+            raise
         except Exception as e:
-            if isinstance(e, LLMError):
-                raise
+            # Wrap unexpected errors in LLMError
             raise LLMError(f"OpenAI API call failed: {e}") from e
 
     def generate_selector_spec(
