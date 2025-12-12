@@ -212,8 +212,9 @@ class TestGenerateSpecPrompts:
     def test_system_prompt_contains_rules(self) -> None:
         """System prompt includes important rules."""
         result = format_generate_spec_system("slb")
-        assert "Never perform calculations" in result
+        assert "DO NOT ADJUST USER-PROVIDED NUMBERS" in result
         assert "valid JSON" in result
+        assert "EXACT EXTRACTION" in result
 
     def test_user_prompt_contains_all_inputs(self) -> None:
         """User prompt includes all input parameters."""

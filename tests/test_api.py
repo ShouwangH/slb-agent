@@ -73,6 +73,20 @@ def make_valid_request() -> dict:
 # =============================================================================
 
 
+class TestHealthCheck:
+    """Tests for health check endpoint."""
+
+    def test_health_check_returns_200(self, client: TestClient) -> None:
+        """Health check endpoint returns 200."""
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert "service" in data
+        assert "version" in data
+
+
 class TestHappyPath:
     """Tests for successful requests."""
 
