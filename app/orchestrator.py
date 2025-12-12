@@ -16,6 +16,8 @@ The orchestrator's job is coordination only: call LLM, call engine, call policy,
 """
 
 from collections import Counter
+from datetime import datetime, timezone
+from typing import Literal
 
 from app.config import DEFAULT_ENGINE_CONFIG, EngineConfig
 from app.engine.explanations import generate_explanation_nodes
@@ -23,13 +25,18 @@ from app.engine.selector import select_assets
 from app.llm.interface import LLMClient
 from app.models import (
     Asset,
+    AuditTrace,
+    AuditTraceEntry,
     Explanation,
+    OutcomeSnapshot,
+    PolicyViolation,
     ProgramOutcome,
     ProgramRequest,
     ProgramResponse,
     ProgramType,
     SelectionStatus,
     SelectorSpec,
+    SpecSnapshot,
 )
 from app.revision_policy import enforce_revision_policy
 from app.validation import (
@@ -180,6 +187,28 @@ def run_program(
         initial_spec.hard_constraints.min_fixed_charge_coverage = request.min_coverage_override
 
     # =========================================================================
+    # Step 3c: Determine target source and floor fraction
+    # =========================================================================
+    #
+    # Clear rule: target_source is based ONLY on whether override was provided
+    # NOT on whether LLM extraction succeeded or matched the override.
+    #
+    # - user_override: User explicitly provided target_amount_override
+    #   → floor_fraction = 1.0 (target is sacred, cannot be reduced)
+    # - llm_extraction: No override, LLM inferred the target
+    #   → floor_fraction = 0.75 (allow reduction down to 75% of original)
+
+    target_source: Literal["user_override", "llm_extraction"]
+    floor_fraction: float
+
+    if request.target_amount_override is not None:
+        target_source = "user_override"
+        floor_fraction = 1.0
+    else:
+        target_source = "llm_extraction"
+        floor_fraction = 0.75
+
+    # =========================================================================
     # Step 4: Validate spec
     # =========================================================================
 
@@ -202,11 +231,29 @@ def run_program(
     assert original_target > 0, "original_target must be positive after clamping"
 
     # =========================================================================
+    # Step 5b: Initialize audit trace
+    # =========================================================================
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    floor_target = original_target * floor_fraction
+
+    audit_trace = AuditTrace(
+        entries=[],
+        original_target=original_target,
+        floor_target=floor_target,
+        floor_fraction=floor_fraction,
+        target_source=target_source,
+        started_at=started_at,
+        completed_at=None,
+    )
+
+    # =========================================================================
     # Step 6: Agentic loop
     # =========================================================================
 
     current_spec = initial_spec
     outcome: ProgramOutcome
+    policy_violations: list[PolicyViolation] = []  # Track violations for current iteration
 
     for attempt in range(current_spec.max_iterations):
         # 6a. Run engine
@@ -217,7 +264,26 @@ def run_program(
             config=config,
         )
 
-        # 6b. Check result
+        # 6b. Record audit trace entry
+        # Determine target_before: None for initial iteration, previous target otherwise
+        target_before = None if attempt == 0 else audit_trace.entries[-1].target_after
+
+        entry = AuditTraceEntry(
+            iteration=attempt,
+            phase="initial" if attempt == 0 else "revision",
+            spec_snapshot=SpecSnapshot.from_spec(current_spec),
+            outcome_snapshot=OutcomeSnapshot.from_outcome(outcome),
+            policy_violations=policy_violations,  # From previous iteration's revision
+            target_before=target_before,
+            target_after=current_spec.target_amount,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        audit_trace.entries.append(entry)
+
+        # Reset policy violations for next iteration
+        policy_violations = []
+
+        # 6c. Check result
         if outcome.status == SelectionStatus.OK:
             # Success - exit loop
             break
@@ -226,7 +292,7 @@ def run_program(
             # Numeric error - cannot recover, exit loop
             break
 
-        # 6c. INFEASIBLE: attempt revision if iterations remain
+        # 6d. INFEASIBLE: attempt revision if iterations remain
         if attempt < current_spec.max_iterations - 1:
             # Call LLM to revise spec
             revised_spec = llm.revise_selector_spec(
@@ -235,13 +301,17 @@ def run_program(
                 outcome=outcome,
             )
 
-            # Enforce revision policy
+            # Enforce revision policy with floor_fraction
             policy_result = enforce_revision_policy(
                 immutable_hard=immutable_hard,
                 original_target=original_target,
                 prev_spec=current_spec,
                 new_spec=revised_spec,
+                floor_fraction=floor_fraction,
             )
+
+            # Capture policy violations for next iteration's entry
+            policy_violations = policy_result.violations
 
             if not policy_result.valid:
                 # Policy violation - cannot revise further, exit loop
@@ -274,11 +344,16 @@ def run_program(
     )
 
     # =========================================================================
-    # Step 8: Return response
+    # Step 8: Complete audit trace and return response
     # =========================================================================
 
+    # 8a. Complete audit trace
+    audit_trace.completed_at = datetime.now(timezone.utc).isoformat()
+
+    # 8b. Return response
     return ProgramResponse(
         selector_spec=current_spec,
         outcome=outcome,
         explanation=explanation,
+        audit_trace=audit_trace,
     )
