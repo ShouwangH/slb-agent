@@ -96,16 +96,16 @@ def base_request(
 
 
 @pytest.fixture
-def override_request(
+def floor_override_request(
     sample_assets: list[Asset], healthy_corporate_state: CorporateState
 ) -> ProgramRequest:
-    """Program request with explicit target override (user_override)."""
+    """Program request with explicit floor override (allows flexibility)."""
     return ProgramRequest(
         assets=sample_assets,
         corporate_state=healthy_corporate_state,
         program_type=ProgramType.SLB,
-        program_description="Raise funds via SLB",
-        target_amount_override=50_000_000,  # User specifies exact target
+        program_description="Raise $50M via SLB",  # LLM extracts $50M target
+        floor_override=40_000_000,  # User allows reduction to $40M (80% of target)
     )
 
 
@@ -183,7 +183,12 @@ class TestAuditTracePresence:
 
 
 class TestTargetSource:
-    """Tests for target_source determination (user_override vs llm_extraction)."""
+    """Tests for target_source determination.
+
+    With the new semantics, target_source is always 'llm_extraction'
+    since the user no longer provides target overrides - they can only
+    provide floor_override to allow flexibility.
+    """
 
     def test_llm_extraction_when_no_override(self, base_request: ProgramRequest) -> None:
         """target_source is 'llm_extraction' when no override provided."""
@@ -193,15 +198,16 @@ class TestTargetSource:
 
         assert response.audit_trace.target_source == "llm_extraction"
 
-    def test_user_override_when_override_provided(
-        self, override_request: ProgramRequest
+    def test_llm_extraction_even_with_floor_override(
+        self, floor_override_request: ProgramRequest
     ) -> None:
-        """target_source is 'user_override' when override provided."""
+        """target_source is always 'llm_extraction' (even with floor_override)."""
         mock = MockLLMClient(custom_spec=make_feasible_spec())
 
-        response = run_program(override_request, mock)
+        response = run_program(floor_override_request, mock)
 
-        assert response.audit_trace.target_source == "user_override"
+        # Floor override doesn't change target_source - LLM still determines target
+        assert response.audit_trace.target_source == "llm_extraction"
 
 
 # =============================================================================
@@ -210,32 +216,38 @@ class TestTargetSource:
 
 
 class TestFloorFraction:
-    """Tests for floor_fraction correctness."""
+    """Tests for floor_fraction correctness.
 
-    def test_llm_extraction_floor_is_75_percent(
+    New semantics:
+    - Default (no floor_override): floor_fraction = 1.0 (target is sacred)
+    - With floor_override: floor_fraction = floor_override / target_amount
+    """
+
+    def test_default_floor_is_100_percent(
         self, base_request: ProgramRequest
     ) -> None:
-        """floor_fraction is 0.75 for llm_extraction (no override)."""
+        """floor_fraction is 1.0 by default (target is sacred)."""
         mock = MockLLMClient(custom_spec=make_feasible_spec(target=100_000_000))
 
         response = run_program(base_request, mock)
 
-        assert response.audit_trace.floor_fraction == 0.75
-        # floor_target should be 75% of original_target
-        expected_floor = response.audit_trace.original_target * 0.75
-        assert response.audit_trace.floor_target == pytest.approx(expected_floor)
-
-    def test_user_override_floor_is_100_percent(
-        self, override_request: ProgramRequest
-    ) -> None:
-        """floor_fraction is 1.0 for user_override."""
-        mock = MockLLMClient(custom_spec=make_feasible_spec())
-
-        response = run_program(override_request, mock)
-
         assert response.audit_trace.floor_fraction == 1.0
-        # floor_target should equal original_target
+        # floor_target should equal original_target (sacred)
         assert response.audit_trace.floor_target == response.audit_trace.original_target
+
+    def test_floor_override_sets_custom_floor(
+        self, floor_override_request: ProgramRequest
+    ) -> None:
+        """floor_fraction reflects the floor_override when provided."""
+        # floor_override_request has floor_override=$40M
+        # MockLLM will return target=$50M, so floor_fraction = 40M/50M = 0.8
+        mock = MockLLMClient(custom_spec=make_feasible_spec(target=50_000_000))
+
+        response = run_program(floor_override_request, mock)
+
+        # floor_override = 40M, target = 50M → fraction = 0.8
+        assert response.audit_trace.floor_fraction == pytest.approx(0.8)
+        assert response.audit_trace.floor_target == pytest.approx(40_000_000)
 
     def test_original_target_matches_spec(self, base_request: ProgramRequest) -> None:
         """original_target in audit trace matches the initial spec's target."""

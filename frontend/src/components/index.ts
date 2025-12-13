@@ -10,3 +10,10 @@ export { NumericInvariantsCard } from "./NumericInvariantsCard";
 export { MetricsCard } from "./MetricsCard";
 export { AssetTable } from "./AssetTable";
 export { AuditTraceTimeline } from "./AuditTraceTimeline";
+
+// New components for Auquan design refresh
+export { AdvancedConfigSection } from "./AdvancedConfigSection";
+export { SectionNav, type SidebarSection } from "./SectionNav";
+export { AssetsPanel } from "./AssetsPanel";
+export { RunsPanel } from "./RunsPanel";
+export { LeftSidebar } from "./LeftSidebar";

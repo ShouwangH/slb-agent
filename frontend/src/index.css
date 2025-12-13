@@ -5,7 +5,18 @@
  */
 
 :root {
-  /* Colors */
+  /* Auquan Design Tokens */
+  --bg-page: #f9f8f6;           /* Soft off-white/cream */
+  --bg-card: #ffffff;
+  --accent: #e07a5f;            /* Warm coral/orange */
+  --accent-soft: #fef3ef;       /* Light coral background */
+  --accent-hover: #c96a52;
+  --border-subtle: #e8e6e3;
+  --text-muted: #8a8784;
+  --text-strong: #2d2a26;
+  --text-body: #5c5955;
+
+  /* Legacy Colors (kept for compatibility) */
   --color-primary: #1a365d;
   --color-primary-light: #2d4a7c;
   --color-secondary: #4299e1;
@@ -14,15 +25,15 @@
   --color-error: #e53e3e;
 
   /* Grays */
-  --color-gray-50: #f7fafc;
-  --color-gray-100: #edf2f7;
-  --color-gray-200: #e2e8f0;
-  --color-gray-300: #cbd5e0;
-  --color-gray-400: #a0aec0;
-  --color-gray-500: #718096;
-  --color-gray-600: #4a5568;
-  --color-gray-700: #2d3748;
-  --color-gray-800: #1a202c;
+  --color-gray-50: #f9f8f6;
+  --color-gray-100: #f4f3f1;
+  --color-gray-200: #e8e6e3;
+  --color-gray-300: #d4d2cf;
+  --color-gray-400: #a8a5a0;
+  --color-gray-500: #8a8784;
+  --color-gray-600: #5c5955;
+  --color-gray-700: #3d3a37;
+  --color-gray-800: #2d2a26;
 
   /* Spacing */
   --space-xs: 0.25rem;
@@ -54,8 +65,8 @@
   -moz-osx-font-smoothing: grayscale;
 
   /* Light theme defaults */
-  color: var(--color-gray-700);
-  background-color: var(--color-gray-50);
+  color: var(--text-body);
+  background-color: var(--bg-page);
 }
 
 /* Reset */
@@ -121,22 +132,22 @@ button {
 }
 
 button.primary {
-  background-color: var(--color-primary);
+  background-color: var(--accent);
   color: white;
 }
 
 button.primary:hover {
-  background-color: var(--color-primary-light);
+  background-color: var(--accent-hover);
 }
 
 button.secondary {
-  background-color: var(--color-gray-100);
-  color: var(--color-gray-700);
-  border-color: var(--color-gray-300);
+  background-color: transparent;
+  color: var(--text-body);
+  border-color: var(--border-subtle);
 }
 
 button.secondary:hover {
-  background-color: var(--color-gray-200);
+  background-color: var(--color-gray-100);
 }
 
 button:disabled {

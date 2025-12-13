@@ -12,8 +12,10 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>SLB Scenario Planner</h1>
-        <p className="subtitle">Sale-Leaseback Funding Program Analyzer</p>
+        <div className="app-header-title">
+          <h1>SLB Scenario Planner</h1>
+          <span className="subtitle">Sale-Leaseback Funding Program Analyzer</span>
+        </div>
       </header>
 
       <ErrorBoundary>

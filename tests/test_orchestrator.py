@@ -277,7 +277,9 @@ class TestRevisionLoop:
         # max_iterations is 3, so at most 2 revisions
         assert mock.call_counts["revise_selector_spec"] >= 1
 
-    def test_max_iterations_respected(self, base_request: ProgramRequest) -> None:
+    def test_max_iterations_respected(
+        self, sample_assets: list[Asset], healthy_corporate_state: CorporateState
+    ) -> None:
         """Loop stops after max_iterations even if still infeasible."""
         # Spec with very high target that can never be met
         spec = SelectorSpec(
@@ -297,7 +299,16 @@ class TestRevisionLoop:
             revision_target_reduction=0.05,  # Small reduction, won't help
         )
 
-        response = run_program(base_request, mock)
+        # Need floor_override to allow revisions (target is sacred by default)
+        request = ProgramRequest(
+            assets=sample_assets,
+            corporate_state=healthy_corporate_state,
+            program_type=ProgramType.SLB,
+            program_description="Raise $10B via SLB",
+            floor_override=1_000_000_000,  # Allow reduction to $1B (10% of target)
+        )
+
+        response = run_program(request, mock)
 
         # Should have made max_iterations - 1 revisions (first run + 2 revisions)
         assert mock.call_counts["revise_selector_spec"] == 2
@@ -362,11 +373,13 @@ class TestPolicyViolations:
         )
         mock = PolicyViolatingMock(custom_spec=initial_spec)
 
+        # Need floor_override to allow revisions (target is sacred by default)
         request = ProgramRequest(
             assets=sample_assets,
             corporate_state=healthy_corporate_state,
             program_type=ProgramType.SLB,
             program_description="Raise $500M",
+            floor_override=100_000_000,  # Allow reduction to $100M (20% of target)
         )
 
         response = run_program(request, mock)

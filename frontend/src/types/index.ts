@@ -257,7 +257,7 @@ export interface ProgramRequest {
   corporate_state: CorporateState;
   program_type: ProgramType;
   program_description: string;
-  target_amount_override?: number | null;
+  floor_override?: number | null;
   max_leverage_override?: number | null;
   min_coverage_override?: number | null;
 }

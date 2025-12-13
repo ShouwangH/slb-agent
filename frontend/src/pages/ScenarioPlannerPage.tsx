@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   ScenarioForm,
-  RunList,
+  LeftSidebar,
   LoadingSpinner,
   AuditTraceTimeline,
   NumericInvariantsCard,
@@ -17,6 +17,7 @@ import {
   AssetTable,
 } from "../components";
 import { createRun, getRun, listRuns, ApiError } from "../api/runs";
+import { SAMPLE_ASSETS } from "../data/sampleAssets";
 import type {
   ProgramRequest,
   RunListItem,
@@ -122,13 +123,14 @@ export function ScenarioPlannerPage() {
 
   return (
     <div className="scenario-planner">
-      {/* Left Sidebar: Run History */}
+      {/* Left Sidebar: Sections Navigation */}
       <aside className="sidebar-left">
-        <RunList
+        <LeftSidebar
+          assets={SAMPLE_ASSETS}
           runs={runs}
           selectedRunId={selectedRunId}
           onSelectRun={handleSelectRun}
-          isLoading={isLoadingRuns}
+          isLoadingRuns={isLoadingRuns}
         />
       </aside>
 

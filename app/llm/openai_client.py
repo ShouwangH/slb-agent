@@ -7,8 +7,11 @@ It implements the LLMClient Protocol and uses structured outputs.
 Requires OPENAI_API_KEY environment variable to be set.
 """
 
+import logging
 import os
 from typing import Optional, TypeVar
+
+logger = logging.getLogger(__name__)
 
 import openai
 from openai import OpenAI
@@ -232,7 +235,18 @@ class OpenAILLMClient:
             asset_summary=asset_summary,
         )
 
-        return self._call_structured(system_prompt, user_prompt, SelectorSpec)
+        spec = self._call_structured(system_prompt, user_prompt, SelectorSpec)
+
+        # Debug logging for asset filters
+        debug_msg = (
+            f"LLM generated spec: target={spec.target_amount:,.0f}, "
+            f"asset_filters.include_types={spec.asset_filters.include_asset_types}, "
+            f"asset_filters.exclude_types={spec.asset_filters.exclude_asset_types}"
+        )
+        logger.info(debug_msg)
+        print(f"[DEBUG] {debug_msg}")  # Also print for immediate visibility
+
+        return spec
 
     def revise_selector_spec(
         self,
