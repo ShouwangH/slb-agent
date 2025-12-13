@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-from app.models import ProgramResponse, ScenarioKind
+from app.models import ProgramResponse, ScenarioKind, ScenarioSetSummary
 
 
 @dataclass
@@ -50,15 +50,16 @@ class RunRecord:
 
 class RunStore:
     """
-    Thread-safe in-memory store for run records.
+    Thread-safe in-memory store for run records and scenario sets.
 
-    Uses a dict for O(1) lookup by run_id and a lock for thread safety.
-    Runs are stored in insertion order (Python 3.7+ dict behavior).
+    Uses dicts for O(1) lookup by ID and a single lock for thread safety.
+    Records are stored in insertion order (Python 3.7+ dict behavior).
     """
 
     def __init__(self) -> None:
         """Initialize empty store with lock."""
         self._runs: dict[str, RunRecord] = {}
+        self._scenario_sets: dict[str, ScenarioSetSummary] = {}
         self._lock = threading.Lock()
 
     def create(self, record: RunRecord) -> None:
@@ -113,9 +114,65 @@ class RunStore:
         return runs[:limit]
 
     def clear(self) -> None:
-        """Clear all run records. Useful for testing."""
+        """Clear all run records and scenario sets. Useful for testing."""
         with self._lock:
             self._runs.clear()
+            self._scenario_sets.clear()
+
+    # =========================================================================
+    # Scenario Set Methods
+    # =========================================================================
+
+    def create_scenario_set(self, summary: ScenarioSetSummary) -> None:
+        """
+        Store a new scenario set summary.
+
+        Args:
+            summary: ScenarioSetSummary to store
+        """
+        with self._lock:
+            self._scenario_sets[summary.id] = summary
+
+    def get_scenario_set(self, set_id: str) -> Optional[ScenarioSetSummary]:
+        """
+        Retrieve a scenario set by ID.
+
+        Args:
+            set_id: The scenario set's unique identifier
+
+        Returns:
+            ScenarioSetSummary if found, None otherwise
+        """
+        with self._lock:
+            return self._scenario_sets.get(set_id)
+
+    def list_scenario_sets(self, limit: int = 10) -> list[ScenarioSetSummary]:
+        """
+        List scenario sets, most recent first.
+
+        Args:
+            limit: Maximum number of sets to return (default 10)
+
+        Returns:
+            List of ScenarioSetSummary objects, most recent first
+        """
+        with self._lock:
+            sets = list(self._scenario_sets.values())
+        sets.reverse()
+        return sets[:limit]
+
+    def get_runs_for_set(self, set_id: str) -> list[RunRecord]:
+        """
+        Get all runs belonging to a scenario set.
+
+        Args:
+            set_id: The scenario set's unique identifier
+
+        Returns:
+            List of RunRecord objects belonging to the set
+        """
+        with self._lock:
+            return [r for r in self._runs.values() if r.scenario_set_id == set_id]
 
 
 # Singleton instance for use across the application
