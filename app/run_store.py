@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-from app.models import ProgramResponse
+from app.models import ProgramResponse, ScenarioKind
 
 
 @dataclass
@@ -27,14 +27,25 @@ class RunRecord:
         response: ProgramResponse if run completed successfully
         error: Error message if run failed (validation error, etc.)
         created_at: ISO format timestamp of run creation
+
+        # Scenario metadata (None = single-scenario run, not part of any set)
+        scenario_set_id: ID of the scenario set this run belongs to
+        scenario_kind: Classification of this scenario variant
+        scenario_label: Human-readable label for this scenario
     """
 
+    # Required fields (no defaults)
     run_id: str
     fund_id: Optional[str]
     program_description: str
     response: Optional[ProgramResponse]
     error: Optional[str]
     created_at: str
+
+    # Optional scenario metadata (defaults = None for backward compatibility)
+    scenario_set_id: Optional[str] = None
+    scenario_kind: Optional[ScenarioKind] = None
+    scenario_label: Optional[str] = None
 
 
 class RunStore:
