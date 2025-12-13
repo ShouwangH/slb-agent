@@ -301,3 +301,21 @@ export interface ErrorResponse {
   code: string;
 }
 
+// =============================================================================
+// Scenario Types (Multi-Scenario Orchestration)
+// =============================================================================
+
+export type ScenarioKind =
+  | "base"
+  | "risk_off"
+  | "aggressive"
+  | "geo_focus"
+  | "custom";
+
+export interface ScenarioSetSummary {
+  id: string;
+  brief: string;
+  created_at: string;
+  run_ids: string[];
+}
+

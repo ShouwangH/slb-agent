@@ -1,6 +1,6 @@
 # Multi-Scenario Orchestrator Implementation Plan
 
-> **Status**: Draft - Pending Approval
+> **Status**: Draft v2 - Revised per reviewer feedback
 > **Date**: 2025-12-12
 > **Author**: Claude (Implementation Planning)
 
@@ -67,62 +67,71 @@ The "one true path" from request to response:
 
 ---
 
-## 2. Invariants We Must Not Break
+## 2. Invariants
 
-### 2.1 Core Engine Interface
+### 2.1 Protocol Invariants (MUST preserve)
 
-| Invariant | Location | Rationale |
-|-----------|----------|-----------|
-| `select_assets(assets, corporate_state, spec, config) → ProgramOutcome` | `engine/selector.py:118` | Single entry point for deterministic selection |
-| `ProgramRequest` JSON shape | `models.py:590-612` | API contract with frontend |
-| `ProgramResponse` JSON shape | `models.py:615-623` | API contract with frontend |
-| `ProgramOutcome` fields | `models.py:357-401` | Frontend reads these directly |
-| `AuditTrace` + `AuditTraceEntry` structure | `models.py:528-582` | Frontend renders audit timeline |
+These are API contracts that external consumers depend on. Breaking these breaks the frontend.
 
-### 2.2 RunRecord Structure
+| Invariant | Location | Why It's Sacred |
+|-----------|----------|-----------------|
+| `ProgramRequest` JSON shape | `models.py:590-612` | Frontend serializes this |
+| `ProgramResponse` JSON shape | `models.py:615-623` | Frontend deserializes this |
+| `ProgramOutcome.status` enum values | `models.py:52-57` | `"ok" \| "infeasible" \| "numeric_error"` |
+| `RunRecord` core fields | `run_store.py:19-37` | Frontend expects exact shape |
+| `AuditTrace` structure | `models.py:559-582` | Frontend renders timeline |
+| `/api/runs` response shape | `api.py:259-320` | Only additive changes allowed |
 
-| Field | Type | Must Preserve |
-|-------|------|---------------|
-| `run_id` | `str` | Yes - UUID4 primary key |
-| `fund_id` | `Optional[str]` | Yes - filtering mechanism |
-| `program_description` | `str` | Yes - UI display |
-| `response` | `Optional[ProgramResponse]` | Yes - full response payload |
-| `error` | `Optional[str]` | Yes - error capture |
-| `created_at` | `str` | Yes - ISO timestamp |
+### 2.2 Engine Invariants (MUST preserve)
 
-### 2.3 HTTP API Contracts
+The deterministic engine must remain a pure function.
 
-| Endpoint | Contract |
-|----------|----------|
-| `POST /api/runs` | Returns `{ run_id, status, response?, error? }` |
-| `GET /api/runs/{run_id}` | Returns full `RunRecord` shape |
-| `GET /api/runs` | Returns list of `{ run_id, fund_id, program_description, status, created_at }` |
+| Invariant | Location | Behavior |
+|-----------|----------|----------|
+| `select_assets()` signature | `engine/selector.py:118` | `(assets, corporate_state, spec, config) → ProgramOutcome` |
+| Greedy selection is deterministic | `engine/selector.py:177-209` | Same inputs → same outputs |
+| Constraint checking is pure | `engine/metrics.py` | No side effects |
 
-### 2.4 Revision Policy Invariants
+### 2.3 Behavioral Invariants (Within single-run revision loop ONLY)
 
-| Rule | Location | Behavior |
-|------|----------|----------|
-| `program_type` immutable | `revision_policy.py:93-105` | Change → invalid |
-| `hard_constraints` cannot relax | `revision_policy.py:111-245` | Clamp to original |
-| `target_amount` monotonically decreasing | `revision_policy.py:252-298` | Max 20%/iter, floor enforced |
-| Filter relaxation bounded | `revision_policy.py:304-402` | ±0.1/iter with ceiling/floor |
+These apply to the **revision loop within a single run**. They do NOT apply to multi-scenario generation.
 
-### 2.5 Frontend Assumptions
+| Rule | Scope | Behavior |
+|------|-------|----------|
+| `program_type` immutable | Single-run revision | Change → invalid |
+| `hard_constraints` cannot relax | Single-run revision | Clamp to original |
+| `target_amount` monotonically decreasing | Single-run revision | Max 20%/iter, floor enforced |
+| Filter relaxation bounded | Single-run revision | ±0.1/iter with ceiling/floor |
 
-Based on `frontend/src/types/index.ts`:
+> **IMPORTANT**: The monotonic target rule is a revision-loop constraint, not a scenario-generation constraint. Multi-scenario explicitly allows different target amounts per scenario.
 
-- **RunRecord**: Frontend expects exactly `{ run_id, fund_id, program_description, status, response, error, created_at }`
-- **RunListItem**: Expects `{ run_id, fund_id, program_description, status, created_at }` (no `response`)
-- **Status**: Only `"completed" | "failed"` - no other values
-- **AuditTrace**: Frontend assumes one trace per run
+### 2.4 Frontend Assumptions
 
-**Critical**: The frontend currently assumes **one run per request**. Multi-scenario will introduce N runs per user action.
+- **RunRecord**: Expects `{ run_id, fund_id, program_description, status, response, error, created_at }`
+- **RunListItem**: Expects `{ run_id, fund_id, program_description, status, created_at }`
+- **Status**: Only `"completed" | "failed"`
+- **AuditTrace**: One trace per run
+
+**Critical**: Frontend currently assumes **one run per request**. Multi-scenario introduces N runs per user action.
 
 ---
 
-## 3. Proposed New Types and Fields
+## 3. Product Decision: Proceeds Story
 
-### 3.1 ScenarioKind Enum
+> **Decision**: Scenarios represent **different capital asks**.
+>
+> Each scenario may have a different target amount (proceeds goal). This is intentional—the point of multi-scenario is to explore "what if we needed $8M vs $12M?" alongside constraint variations.
+>
+> **Implications**:
+> - `target_amount` is a scenario parameter, not shared
+> - LLM can vary target per scenario
+> - The monotonic target rule in `revision_policy.py` applies only to the **within-run revision loop**, not to scenario generation
+
+---
+
+## 4. Proposed New Types and Fields
+
+### 4.1 ScenarioKind Enum
 
 **File**: `app/models.py` (add after existing enums, ~line 87)
 
@@ -140,9 +149,7 @@ class ScenarioKind(str, Enum):
     CUSTOM = "custom"          # LLM-defined variant with custom rationale
 ```
 
-**Rationale**: Closed enum provides type safety and UI-friendly labels. `CUSTOM` allows LLM flexibility.
-
-### 3.2 Scenario Metadata on RunRecord
+### 4.2 Scenario Metadata on RunRecord
 
 **File**: `app/run_store.py` (extend `RunRecord` dataclass)
 
@@ -156,90 +163,74 @@ class RunRecord:
     error: Optional[str]
     created_at: str
 
-    # NEW: Scenario metadata (Optional for backwards compatibility)
-    scenario_set_id: Optional[str] = None  # Links runs in the same set
-    scenario_label: str = "Single Scenario"  # Human-readable label
-    scenario_kind: Optional[str] = None  # ScenarioKind value or None
-    scenario_brief_fragment: Optional[str] = None  # LLM rationale snippet
+    # NEW: Scenario metadata
+    # None = single-scenario run (not part of any set)
+    scenario_set_id: Optional[str] = None
+
+    # Optional[ScenarioKind] - None means "single-scenario, no classification"
+    scenario_kind: Optional[ScenarioKind] = None
+
+    # Human-readable label (only meaningful when scenario_set_id is not None)
+    scenario_label: Optional[str] = None
 ```
 
-**Backwards Compatibility**: All new fields have defaults. Existing runs continue to work with `scenario_set_id=None`.
+**Type semantics**:
+- `scenario_set_id = None` → This is a standalone single-scenario run
+- `scenario_set_id = "uuid"` → This run belongs to a scenario set
+- `scenario_kind = None` → Not classified (single-scenario or legacy run)
+- `scenario_kind = ScenarioKind.BASE` → Base scenario in a set
 
-### 3.3 ScenarioSetSummary Model
+### 4.3 ScenarioSetSummary Model (Simplified)
 
 **File**: `app/models.py` (add after API Models section, ~line 631)
 
 ```python
 class ScenarioSetSummary(BaseModel):
     """
-    Summary of a scenario set containing multiple program runs.
+    Summary of a scenario set. Metadata lives on RunRecords, not here.
 
-    Created when a user submits a brief that generates multiple scenario variants.
+    This is a lightweight index—fetch runs by ID for full details.
     """
     id: str = Field(..., description="Unique scenario set ID (UUID4)")
     brief: str = Field(..., description="Original natural language brief")
-    base_spec_hash: Optional[str] = Field(
-        None, description="Hash of the base ProgramRequest for deduplication"
-    )
     created_at: str = Field(..., description="ISO timestamp")
-
-    # Scenario tracking
-    num_scenarios: int = Field(..., ge=1, description="Number of scenarios in set")
     run_ids: list[str] = Field(..., description="Ordered list of run IDs")
-    scenario_labels: list[str] = Field(..., description="Labels for each scenario")
-    scenario_kinds: list[str] = Field(..., description="ScenarioKind values")
-
-    # Status rollup
-    completed_count: int = Field(0, ge=0, description="Runs with status=completed")
-    failed_count: int = Field(0, ge=0, description="Runs with status=failed")
 ```
 
-### 3.4 ScenarioDefinition Model (Internal)
+**Design note**: Scenario labels, kinds, and status are derived from `RunRecord`s. No duplicate storage.
 
-**File**: `app/models.py` (internal model, not exposed in API response)
+### 4.4 ScenarioDefinition Model (v1 - Minimal LLM Surface)
+
+**File**: `app/models.py` (internal model for LLM output)
 
 ```python
 class ScenarioDefinition(BaseModel):
     """
     Definition of a single scenario variant, generated by LLM.
 
-    Used internally to describe how to modify the base spec.
-    This is the LLM output contract for scenario generation.
+    v1: Minimal control surface. Only target and two key constraints.
     """
-    label: str = Field(..., description="Short human-readable label (e.g., 'Risk-Off')")
+    label: str = Field(..., min_length=1, max_length=50,
+        description="Short label (e.g., 'Conservative')")
     kind: ScenarioKind = Field(..., description="Scenario classification")
-    brief_fragment: str = Field(
-        ..., max_length=200,
-        description="1-2 sentence rationale for this variant"
-    )
+    rationale: str = Field(..., min_length=1, max_length=200,
+        description="1-2 sentence rationale for this variant")
 
-    # Spec modifications (all Optional - None means "use base value")
-    target_amount_override: Optional[float] = Field(
-        None, gt=0, description="Override target amount"
-    )
-    floor_override: Optional[float] = Field(
-        None, gt=0, description="Override floor (minimum acceptable target)"
-    )
-    max_leverage_override: Optional[float] = Field(
-        None, gt=0, lt=10, description="Override max net leverage"
-    )
-    min_coverage_override: Optional[float] = Field(
-        None, gt=0, lt=20, description="Override min fixed charge coverage"
-    )
-
-    # Asset filter overrides
-    max_criticality_override: Optional[float] = Field(
-        None, ge=0, le=1, description="Override max criticality filter"
-    )
-    min_leaseability_override: Optional[float] = Field(
-        None, ge=0, le=1, description="Override min leaseability filter"
-    )
-    exclude_markets_override: Optional[list[str]] = Field(
-        None, description="Markets to exclude in this scenario"
-    )
+    # v1: Only three numeric knobs
+    target_amount: float = Field(..., gt=0,
+        description="Target proceeds for this scenario")
+    max_leverage: Optional[float] = Field(None, gt=0, lt=10,
+        description="Max net leverage (None = use default)")
+    min_coverage: Optional[float] = Field(None, gt=0, lt=20,
+        description="Min fixed charge coverage (None = use default)")
 ```
 
-### 3.5 TypeScript Additions
+**v1 constraints**:
+- No filter overrides (max_criticality, min_leaseability) - use defaults
+- No market exclusions - use base request
+- Keep LLM contract small and strict
+
+### 4.5 TypeScript Additions
 
 **File**: `frontend/src/types/index.ts` (add after existing types)
 
@@ -258,14 +249,8 @@ export type ScenarioKind =
 export interface ScenarioSetSummary {
   id: string;
   brief: string;
-  base_spec_hash: string | null;
   created_at: string;
-  num_scenarios: number;
   run_ids: string[];
-  scenario_labels: string[];
-  scenario_kinds: string[];
-  completed_count: number;
-  failed_count: number;
 }
 
 // Extended RunRecord with optional scenario fields
@@ -278,11 +263,10 @@ export interface RunRecord {
   error: string | null;
   created_at: string;
 
-  // NEW: Scenario metadata (optional for backwards compatibility)
-  scenario_set_id?: string | null;
-  scenario_label?: string;
-  scenario_kind?: ScenarioKind | null;
-  scenario_brief_fragment?: string | null;
+  // Scenario metadata (null = single-scenario run, not part of any set)
+  scenario_set_id: string | null;
+  scenario_kind: ScenarioKind | null;
+  scenario_label: string | null;
 }
 
 // Extended RunListItem
@@ -293,88 +277,92 @@ export interface RunListItem {
   status: "completed" | "failed";
   created_at: string;
 
-  // NEW: Optional scenario metadata
-  scenario_set_id?: string | null;
-  scenario_label?: string;
-  scenario_kind?: ScenarioKind | null;
+  // Scenario metadata (null = single-scenario run)
+  scenario_set_id: string | null;
+  scenario_kind: ScenarioKind | null;
+  scenario_label: string | null;
 }
 ```
 
 ---
 
-## 4. Orchestrator Design
+## 5. Orchestrator Design
 
-### 4.1 Module Structure
+### 5.1 Module Structure
 
 ```
 app/
 ├── orchestrator.py          # Existing single-scenario orchestrator (unchanged)
 ├── scenario_orchestrator.py # NEW: Multi-scenario coordination
-├── scenario_store.py        # NEW: ScenarioSet storage
-└── llm/
-    ├── interface.py         # Existing (extend with new method)
-    └── prompts/
-        └── scenario_gen.py  # NEW: Prompt for scenario generation
+└── run_store.py             # EXTENDED: Add scenario set tracking
 ```
 
-### 4.2 Core Function Signatures
+**Design decision**: No separate `ScenarioStore`. ScenarioSetSummary is lightweight (just `id`, `brief`, `created_at`, `run_ids`) and can be stored in `RunStore` alongside runs. This avoids cross-store consistency issues.
+
+### 5.2 RunStore Extension
+
+**File**: `app/run_store.py` (extend existing class)
+
+```python
+class RunStore:
+    def __init__(self) -> None:
+        self._runs: dict[str, RunRecord] = {}
+        self._scenario_sets: dict[str, ScenarioSetSummary] = {}  # NEW
+        self._lock = threading.Lock()
+
+    # ... existing methods ...
+
+    # NEW: Scenario set methods
+    def create_scenario_set(self, summary: ScenarioSetSummary) -> None:
+        with self._lock:
+            self._scenario_sets[summary.id] = summary
+
+    def get_scenario_set(self, set_id: str) -> Optional[ScenarioSetSummary]:
+        with self._lock:
+            return self._scenario_sets.get(set_id)
+
+    def list_scenario_sets(self, limit: int = 10) -> list[ScenarioSetSummary]:
+        with self._lock:
+            sets = list(self._scenario_sets.values())
+        sets.reverse()  # Most recent first
+        return sets[:limit]
+
+    def get_runs_for_set(self, set_id: str) -> list[RunRecord]:
+        """Get all runs belonging to a scenario set."""
+        with self._lock:
+            return [r for r in self._runs.values() if r.scenario_set_id == set_id]
+```
+
+### 5.3 Core Function Signatures
 
 **File**: `app/scenario_orchestrator.py`
 
 ```python
 from typing import Optional
-from app.models import (
-    ProgramRequest, ScenarioDefinition, ScenarioSetSummary, ScenarioKind
-)
-from app.run_store import RunRecord
+from app.models import ProgramRequest, ScenarioDefinition, ScenarioSetSummary
+from app.run_store import run_store
 from app.llm.interface import LLMClient
 from app.config import EngineConfig
 
-def generate_scenarios_from_brief(
-    brief: str,
-    base_request: ProgramRequest,
-    llm: LLMClient,
-    num_scenarios: int = 3,
-    kinds: Optional[list[ScenarioKind]] = None,
-) -> list[ScenarioDefinition]:
-    """
-    Generate N scenario definitions from a natural language brief.
-
-    Args:
-        brief: Natural language program description
-        base_request: The base ProgramRequest to derive scenarios from
-        llm: LLM client for generation
-        num_scenarios: Number of scenarios to generate (default 3)
-        kinds: Specific scenario kinds to generate (None = LLM chooses)
-
-    Returns:
-        List of ScenarioDefinition objects describing each variant
-
-    Note:
-        The first scenario should always be BASE (direct interpretation).
-        LLM may generate fewer scenarios if brief doesn't support variety.
-    """
-    ...
-
-def apply_scenario_patch(
+def build_scenario_request(
     base_request: ProgramRequest,
     scenario: ScenarioDefinition,
 ) -> ProgramRequest:
     """
-    Apply scenario modifications to create a concrete ProgramRequest.
+    Build a concrete ProgramRequest from base + scenario definition.
 
     Args:
-        base_request: The original ProgramRequest
-        scenario: ScenarioDefinition with overrides
+        base_request: The original ProgramRequest (assets, corporate_state)
+        scenario: ScenarioDefinition with target and constraints
 
     Returns:
-        New ProgramRequest with scenario modifications applied
+        New ProgramRequest ready for run_program()
 
-    Invariant Enforcement:
-        - floor_override cannot exceed target_amount
-        - max_leverage_override bounded to [0, 10]
-        - coverage overrides bounded to [0, 20]
-        - filter values bounded to [0, 1]
+    Invariants:
+        - assets and corporate_state are NEVER modified
+        - program_description gets scenario label appended
+        - max_leverage bounded to (0, 10)
+        - min_coverage bounded to (0, 20)
     """
     ...
 
@@ -385,36 +373,35 @@ def run_scenario_set(
     config: EngineConfig,
     num_scenarios: int = 3,
     fund_id: Optional[str] = None,
-) -> ScenarioSetSummary:
+) -> tuple[ScenarioSetSummary, list[dict]]:
     """
     Execute a complete multi-scenario run.
-
-    This is the main entry point for multi-scenario execution.
 
     Args:
         brief: Natural language program description
         base_request: Base ProgramRequest with assets and corporate state
         llm: LLM client
         config: Engine configuration
-        num_scenarios: Target number of scenarios
+        num_scenarios: Target number of scenarios (1-5)
         fund_id: Optional fund identifier
 
     Returns:
-        ScenarioSetSummary with all run IDs and metadata
+        (ScenarioSetSummary, list of run result dicts)
 
     Flow:
-        1. Generate ScenarioDefinitions from brief
-        2. For each scenario:
-           a. Apply patch to create ProgramRequest
-           b. Call run_program() (existing orchestrator)
-           c. Store RunRecord with scenario metadata
-        3. Create and store ScenarioSetSummary
-        4. Return summary
+        1. scenario_set_id = uuid4()
+        2. scenarios = llm.generate_scenario_definitions(brief, num_scenarios)
+        3. For each scenario:
+           a. request = build_scenario_request(base_request, scenario)
+           b. response = run_program(request, llm, config)
+           c. Store RunRecord with scenario_set_id, scenario_kind, scenario_label
+        4. Store ScenarioSetSummary
+        5. Return (summary, run_results)
     """
     ...
 ```
 
-### 4.3 LLM Interface Extension
+### 5.4 LLM Interface Extension
 
 **File**: `app/llm/interface.py` (add to Protocol)
 
@@ -424,30 +411,28 @@ def generate_scenario_definitions(
     brief: str,
     asset_summary: str,
     num_scenarios: int,
-    existing_kinds: Optional[list[str]] = None,
-) -> list[dict]:
+) -> list[ScenarioDefinition]:
     """
-    Generate scenario variant definitions from a brief.
+    Generate scenario definitions from a brief.
 
     Args:
         brief: Natural language program description
-        asset_summary: Summary of available assets
-        num_scenarios: Target number of scenarios
-        existing_kinds: Kinds already generated (for diversity)
+        asset_summary: Summary of available assets (from summarize_assets)
+        num_scenarios: Number of scenarios to generate (1-5)
 
     Returns:
-        List of dicts matching ScenarioDefinition schema
+        List of ScenarioDefinition objects
 
-    Contract:
-        - First scenario MUST be kind="base"
+    Contract (v1):
+        - First scenario MUST be kind=BASE
         - Each scenario has unique label
-        - brief_fragment explains the variant's rationale
-        - Overrides are relative to a "reasonable base interpretation"
+        - target_amount is required for each scenario
+        - max_leverage and min_coverage are optional
     """
     ...
 ```
 
-### 4.4 LLM Contract (JSON Schema)
+### 5.5 LLM Contract (v1 - Strict and Minimal)
 
 ```json
 {
@@ -455,103 +440,93 @@ def generate_scenario_definitions(
     {
       "label": "Base Case",
       "kind": "base",
-      "brief_fragment": "Direct interpretation: $10M SLB targeting distribution centers",
-      "target_amount_override": null,
-      "floor_override": null,
-      "max_leverage_override": null,
-      "min_coverage_override": null,
-      "max_criticality_override": null,
-      "min_leaseability_override": null,
-      "exclude_markets_override": null
+      "rationale": "Direct interpretation: $10M SLB targeting distribution centers",
+      "target_amount": 10000000,
+      "max_leverage": null,
+      "min_coverage": null
     },
     {
       "label": "Conservative",
       "kind": "risk_off",
-      "brief_fragment": "Tighter leverage covenant (3.0x vs 4.0x) with lower target",
-      "target_amount_override": 8000000,
-      "floor_override": 7000000,
-      "max_leverage_override": 3.0,
-      "min_coverage_override": 3.5,
-      "max_criticality_override": 0.5,
-      "min_leaseability_override": null,
-      "exclude_markets_override": null
+      "rationale": "Tighter leverage covenant (3.0x) with lower $8M target",
+      "target_amount": 8000000,
+      "max_leverage": 3.0,
+      "min_coverage": 3.5
     },
     {
       "label": "Aggressive",
       "kind": "aggressive",
-      "brief_fragment": "Maximize proceeds with relaxed criticality threshold",
-      "target_amount_override": 15000000,
-      "floor_override": 12000000,
-      "max_leverage_override": null,
-      "min_coverage_override": null,
-      "max_criticality_override": 0.8,
-      "min_leaseability_override": 0.3,
-      "exclude_markets_override": null
+      "rationale": "Maximize proceeds at $15M with standard constraints",
+      "target_amount": 15000000,
+      "max_leverage": null,
+      "min_coverage": null
     }
   ]
 }
 ```
 
-### 4.5 Spec Patching Strategy
+**v1 constraints**:
+- Only 3 numeric knobs: `target_amount` (required), `max_leverage` (optional), `min_coverage` (optional)
+- No filter overrides
+- No market exclusions
+- Rationale capped at 200 chars
 
-The `apply_scenario_patch()` function applies overrides with these rules:
+### 5.6 Revision Strategy: Base vs Variant Scenarios
 
-| Field | Override Logic | Invariant Check |
-|-------|----------------|-----------------|
-| `program_description` | Append scenario label | None |
-| `floor_override` | Use scenario value if set | Must be ≤ target_amount |
-| `max_leverage_override` | Use scenario value if set | Bounded [0, 10] |
-| `min_coverage_override` | Use scenario value if set | Bounded [0, 20] |
-| Asset filters | Merge with base filters | Values bounded [0, 1] |
+**Key design decision**: Base scenario runs deterministically; variant scenarios use the agentic loop.
 
-**Key Invariant**: The base request's `assets` and `corporate_state` are NEVER modified. Only `program_description` and override fields change.
+| Scenario Kind | Revision Loop? | Floor | Rationale |
+|---------------|----------------|-------|-----------|
+| `BASE` | **No** | `floor = target` (sacred) | User asked for exactly this—show if it's achievable |
+| `RISK_OFF`, `AGGRESSIVE`, etc. | **Yes** | `floor = target * 0.9` | Explore what's actually possible |
 
-### 4.6 Scenario Store
+**Why?**
+- Base scenario answers: "Can I get exactly $10M?" → Show feasible or infeasible, no revision.
+- Variant scenarios answer: "What if I tried $15M?" → Let the agent find what's achievable within bounds.
 
-**File**: `app/scenario_store.py`
+### 5.7 Request Building Strategy
+
+The `build_scenario_request()` function:
 
 ```python
-from dataclasses import dataclass
-from typing import Optional
-import threading
+def build_scenario_request(
+    base_request: ProgramRequest,
+    scenario: ScenarioDefinition,
+) -> ProgramRequest:
+    # Base scenario: no revision flexibility (floor = target)
+    # Variant scenarios: allow 10% reduction during revision
+    if scenario.kind == ScenarioKind.BASE:
+        floor = scenario.target_amount  # Sacred - no revision
+    else:
+        floor = scenario.target_amount * 0.9  # Allow agentic exploration
 
-@dataclass
-class ScenarioSetRecord:
-    """Storage record for a scenario set."""
-    summary: ScenarioSetSummary
+    return ProgramRequest(
+        # Unchanged from base
+        assets=base_request.assets,
+        corporate_state=base_request.corporate_state,
+        program_type=base_request.program_type,
 
-class ScenarioStore:
-    """Thread-safe in-memory store for scenario sets."""
+        # Updated
+        program_description=f"{base_request.program_description} [{scenario.label}]",
 
-    def __init__(self) -> None:
-        self._sets: dict[str, ScenarioSetRecord] = {}
-        self._lock = threading.Lock()
-
-    def create(self, summary: ScenarioSetSummary) -> None:
-        with self._lock:
-            self._sets[summary.id] = ScenarioSetRecord(summary=summary)
-
-    def get(self, set_id: str) -> Optional[ScenarioSetSummary]:
-        with self._lock:
-            record = self._sets.get(set_id)
-            return record.summary if record else None
-
-    def list_sets(
-        self,
-        fund_id: Optional[str] = None,
-        limit: int = 10,
-    ) -> list[ScenarioSetSummary]:
-        # Filter by fund_id if provided (requires joining with runs)
-        ...
-
-scenario_store = ScenarioStore()
+        # Scenario overrides
+        floor_override=floor,
+        max_leverage_override=scenario.max_leverage,  # None = use LLM inference
+        min_coverage_override=scenario.min_coverage,  # None = use LLM inference
+    )
 ```
+
+**Result**:
+- Base scenario with `floor_override = target_amount` → `floor_fraction = 1.0` → revision loop can't reduce target → runs once, returns feasible/infeasible
+- Variant scenarios with `floor_override = target * 0.9` → revision loop can explore down to 90% of target
+
+**Key invariant**: `assets` and `corporate_state` are NEVER modified. Each scenario is a different "capital ask" on the same portfolio.
 
 ---
 
-## 5. API Changes (Additive)
+## 6. API Changes (Additive)
 
-### 5.1 New Endpoints
+### 6.1 New Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -559,7 +534,7 @@ scenario_store = ScenarioStore()
 | `GET` | `/api/scenario_sets` | List scenario sets |
 | `GET` | `/api/scenario_sets/{id}` | Get scenario set with runs |
 
-### 5.2 POST /api/scenario_sets
+### 6.2 POST /api/scenario_sets
 
 **Request**:
 ```json
@@ -569,10 +544,7 @@ scenario_store = ScenarioStore()
     "assets": [...],
     "corporate_state": {...},
     "program_type": "slb",
-    "program_description": "...",
-    "floor_override": null,
-    "max_leverage_override": null,
-    "min_coverage_override": null
+    "program_description": "..."
   },
   "num_scenarios": 3,
   "fund_id": "optional-fund-id"
@@ -586,25 +558,42 @@ scenario_store = ScenarioStore()
     "id": "uuid-here",
     "brief": "We need $10M...",
     "created_at": "2025-12-12T10:00:00Z",
-    "num_scenarios": 3,
-    "run_ids": ["run-1", "run-2", "run-3"],
-    "scenario_labels": ["Base Case", "Conservative", "Aggressive"],
-    "scenario_kinds": ["base", "risk_off", "aggressive"],
-    "completed_count": 3,
-    "failed_count": 0
+    "run_ids": ["run-1", "run-2", "run-3"]
   },
   "runs": [
-    { "run_id": "run-1", "status": "completed", ... },
-    { "run_id": "run-2", "status": "completed", ... },
-    { "run_id": "run-3", "status": "completed", ... }
+    {
+      "run_id": "run-1",
+      "status": "completed",
+      "scenario_set_id": "uuid-here",
+      "scenario_kind": "base",
+      "scenario_label": "Base Case",
+      "response": { ... }
+    },
+    {
+      "run_id": "run-2",
+      "status": "completed",
+      "scenario_set_id": "uuid-here",
+      "scenario_kind": "risk_off",
+      "scenario_label": "Conservative",
+      "response": { ... }
+    },
+    {
+      "run_id": "run-3",
+      "status": "completed",
+      "scenario_set_id": "uuid-here",
+      "scenario_kind": "aggressive",
+      "scenario_label": "Aggressive",
+      "response": { ... }
+    }
   ]
 }
 ```
 
-### 5.3 GET /api/scenario_sets
+**Note**: Scenario metadata (labels, kinds, status) lives on runs, not on the set summary.
+
+### 6.3 GET /api/scenario_sets
 
 **Query Parameters**:
-- `fund_id`: Optional filter
 - `limit`: Max results (default 10, max 100)
 
 **Response** (200 OK):
@@ -613,18 +602,13 @@ scenario_store = ScenarioStore()
   {
     "id": "uuid-1",
     "brief": "We need $10M...",
-    "created_at": "...",
-    "num_scenarios": 3,
-    "run_ids": [...],
-    "scenario_labels": [...],
-    "scenario_kinds": [...],
-    "completed_count": 3,
-    "failed_count": 0
+    "created_at": "2025-12-12T10:00:00Z",
+    "run_ids": ["run-1", "run-2", "run-3"]
   }
 ]
 ```
 
-### 5.4 GET /api/scenario_sets/{id}
+### 6.4 GET /api/scenario_sets/{id}
 
 **Response** (200 OK):
 ```json
@@ -632,37 +616,41 @@ scenario_store = ScenarioStore()
   "scenario_set": {
     "id": "uuid",
     "brief": "...",
-    ...
+    "created_at": "...",
+    "run_ids": [...]
   },
   "runs": [
-    // Full RunRecord objects with responses
+    // Full RunRecord objects with scenario metadata and responses
   ]
 }
 ```
 
-### 5.5 Impact on Existing Routes
+### 6.5 Impact on Existing Routes
 
 | Endpoint | Change |
 |----------|--------|
-| `GET /api/runs` | **Additive**: Returns new optional fields `scenario_set_id`, `scenario_label`, `scenario_kind` |
-| `GET /api/runs/{id}` | **Additive**: Returns new optional fields |
-| `POST /api/runs` | **No change**: Still creates single-scenario runs |
+| `GET /api/runs` | **Additive**: Returns `scenario_set_id`, `scenario_kind`, `scenario_label` (all nullable) |
+| `GET /api/runs/{id}` | **Additive**: Returns same new fields |
+| `POST /api/runs` | **No change**: Creates single-scenario runs with `scenario_*` fields = null |
 
-**Backwards Compatibility**: Existing consumers can ignore new fields (they're optional). The `status` field remains `"completed" | "failed"`.
+**Backwards Compatibility**:
+- New fields are always present but nullable
+- `null` means "single-scenario run, not part of any set"
+- `status` field unchanged: `"completed" | "failed"`
 
 ---
 
-## 6. Frontend Impact Analysis
+## 7. Frontend Impact Analysis
 
-### 6.1 Components That Read Runs
+### 7.1 Components That Read Runs
 
 | Component | File | Impact |
 |-----------|------|--------|
-| `RunList` | `components/RunList.tsx` | Low - can ignore scenario fields |
+| `RunList` | `components/RunList.tsx` | Low - scenario fields are nullable |
 | `RunsPanel` | `components/RunsPanel.tsx` | Low - displays run list |
 | `ScenarioPlannerPage` | `pages/ScenarioPlannerPage.tsx` | **Medium** - needs scenario set support |
 
-### 6.2 Current Assumption: One Run Per Request
+### 7.2 Current Assumption: One Run Per Request
 
 The frontend currently calls `POST /api/runs` and expects one run back. Multi-scenario changes this to:
 
@@ -670,17 +658,17 @@ The frontend currently calls `POST /api/runs` and expects one run back. Multi-sc
 2. **Display change**: Show scenario tabs/cards instead of single result
 3. **Comparison view**: Side-by-side metrics for scenarios
 
-### 6.3 Minimal UI Adaptation Path
+### 7.3 Minimal UI Adaptation Path
 
 **Phase 1** (No UI changes):
 - Frontend continues using `POST /api/runs` for single scenarios
-- New scenario fields are ignored
+- New scenario fields are null, frontend ignores them
 - Existing functionality unchanged
 
 **Phase 2** (Optional scenario display):
-- If `scenario_set_id` is present on a run, show scenario label
+- If `scenario_set_id !== null`, show scenario label badge
 - Add "View Scenario Set" link
-- Runs list can filter by scenario set
+- Runs list can group by scenario set
 
 **Phase 3** (Full scenario support):
 - New "Run Scenario Analysis" button
@@ -688,154 +676,419 @@ The frontend currently calls `POST /api/runs` and expects one run back. Multi-sc
 - Comparison view for scenarios
 - Scenario-aware run list
 
-### 6.4 Type Changes Required
+### 7.4 Type Changes
+
+Types are non-breaking. New fields are nullable:
 
 ```typescript
-// RunListItem now has optional scenario fields - safe to ignore
+// Before: fields didn't exist
+// After: fields exist but are null for single-scenario runs
 interface RunListItem {
   // ... existing fields ...
-  scenario_set_id?: string | null;  // NEW - can ignore
-  scenario_label?: string;           // NEW - can ignore
+  scenario_set_id: string | null;   // null = single scenario
+  scenario_kind: ScenarioKind | null;
+  scenario_label: string | null;
 }
 ```
 
 ---
 
-## 7. Migration Plan
+## 8. PR Roadmap
 
-### Step 1: Add New Models and Fields (No Behavior Change)
-
-**Files to modify**:
-- `app/models.py`: Add `ScenarioKind`, `ScenarioDefinition`, `ScenarioSetSummary`
-- `app/run_store.py`: Add optional scenario fields to `RunRecord`
-- `frontend/src/types/index.ts`: Add TypeScript equivalents
-
-**Tests**:
-- All existing tests pass (no behavior change)
-- New unit tests for model validation
-
-**Verification**:
-```bash
-pytest tests/ -v
-# All existing tests should pass
-```
-
-### Step 2: Wire Scenario Metadata into Existing Runs
-
-**Files to modify**:
-- `app/api.py`: Pass scenario metadata through `create_run()`
-- `app/run_store.py`: Handle new fields in storage
-
-**Default values for existing runs**:
-```python
-RunRecord(
-    # ... existing fields ...
-    scenario_set_id=None,        # Not part of a set
-    scenario_label="Single Scenario",
-    scenario_kind=None,          # Not classified
-    scenario_brief_fragment=None,
-)
-```
-
-**Tests**:
-- Existing endpoint tests pass
-- New tests for metadata round-trip
-
-### Step 3: Add Scenario Store and Orchestrator
-
-**New files**:
-- `app/scenario_store.py`: ScenarioStore class
-- `app/scenario_orchestrator.py`: Multi-scenario coordination
-
-**Tests**:
-- Unit tests for `apply_scenario_patch()` invariant enforcement
-- Integration test for `run_scenario_set()` with mock LLM
-
-### Step 4: Add LLM Scenario Generation
-
-**Files to modify**:
-- `app/llm/interface.py`: Add `generate_scenario_definitions()` to protocol
-- `app/llm/mock.py`: Add mock implementation
-- `app/llm/openai_client.py`: Add OpenAI implementation
-
-**Tests**:
-- Mock LLM returns valid scenario definitions
-- Schema validation on LLM output
-
-### Step 5: Add New API Endpoints
-
-**Files to modify**:
-- `app/api.py`: Add `/api/scenario_sets` routes
-
-**Tests**:
-- Endpoint integration tests
-- Error handling tests
-
-### Step 6: Frontend Updates (Optional)
-
-**Files to modify**:
-- `frontend/src/types/index.ts`: Already done in Step 1
-- Components: Only if scenario UI is needed
+Each PR is independently reviewable and mergeable. Invariants are verified at each step.
 
 ---
 
-## 8. Open Questions / Risks
+### PR 1: Add Scenario Models (No Behavior Change)
 
-### 8.1 Open Questions
+**Scope**: Add new types only. No runtime behavior changes.
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `app/models.py` | Add `ScenarioKind`, `ScenarioDefinition`, `ScenarioSetSummary` |
+| `frontend/src/types/index.ts` | Add TypeScript equivalents |
+
+**Invariant Checks**:
+- [ ] `ProgramRequest` unchanged
+- [ ] `ProgramResponse` unchanged
+- [ ] `ProgramOutcome` unchanged
+- [ ] `AuditTrace` unchanged
+- [ ] All existing tests pass: `pytest tests/ -v`
+
+**Review Focus**:
+- Type definitions match between Python and TypeScript
+- No imports of new types in existing code yet
+
+---
+
+### PR 2: Extend RunRecord with Scenario Fields
+
+**Scope**: Add optional fields to `RunRecord`. All defaults = `None`.
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `app/run_store.py` | Add `scenario_set_id`, `scenario_kind`, `scenario_label` to `RunRecord` |
+
+**Code**:
+```python
+@dataclass
+class RunRecord:
+    # ... existing required fields (unchanged) ...
+    run_id: str
+    fund_id: Optional[str]
+    program_description: str
+    response: Optional[ProgramResponse]
+    error: Optional[str]
+    created_at: str
+
+    # NEW: Optional scenario metadata (defaults = None)
+    scenario_set_id: Optional[str] = None
+    scenario_kind: Optional[ScenarioKind] = None
+    scenario_label: Optional[str] = None
+```
+
+**Invariant Checks**:
+- [ ] Existing `RunRecord` construction sites unchanged (defaults handle it)
+- [ ] `run_store.create()` works with old-style records
+- [ ] `run_store.get()` returns records with new fields = None
+- [ ] All existing tests pass: `pytest tests/ -v`
+
+**Review Focus**:
+- Dataclass field ordering (defaults must come after non-defaults)
+- No changes to existing `RunRecord` instantiation sites
+
+---
+
+### PR 3: Expose Scenario Fields in API Responses
+
+**Scope**: Return scenario fields in `/api/runs` endpoints (always present, nullable).
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `app/api.py` | Update `get_run()` and `list_runs()` response dicts |
+| `frontend/src/types/index.ts` | Update `RunRecord` and `RunListItem` interfaces |
+
+**API Changes**:
+```python
+# GET /api/runs/{id} - add to response
+return {
+    # ... existing fields ...
+    "scenario_set_id": record.scenario_set_id,   # null for existing runs
+    "scenario_kind": record.scenario_kind.value if record.scenario_kind else None,
+    "scenario_label": record.scenario_label,     # null for existing runs
+}
+```
+
+**Invariant Checks**:
+- [ ] Existing fields unchanged (run_id, fund_id, status, etc.)
+- [ ] New fields are always present (not omitted)
+- [ ] New fields are `null` for all existing runs
+- [ ] Frontend TypeScript compiles
+- [ ] All existing tests pass
+
+**Review Focus**:
+- Response shape is additive only
+- `scenario_kind` serialized as string value, not enum object
+
+---
+
+### PR 4: Add Scenario Set Storage to RunStore
+
+**Scope**: Extend `RunStore` with scenario set methods. No API exposure yet.
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `app/run_store.py` | Add `_scenario_sets` dict and CRUD methods |
+| `tests/test_run_store.py` | Add tests for new methods |
+
+**New Methods**:
+```python
+def create_scenario_set(self, summary: ScenarioSetSummary) -> None
+def get_scenario_set(self, set_id: str) -> Optional[ScenarioSetSummary]
+def list_scenario_sets(self, limit: int = 10) -> list[ScenarioSetSummary]
+def get_runs_for_set(self, set_id: str) -> list[RunRecord]
+def clear(self) -> None  # Update to also clear _scenario_sets
+```
+
+**Invariant Checks**:
+- [ ] Existing `RunStore` methods unchanged
+- [ ] Thread safety preserved (single lock covers both dicts)
+- [ ] `clear()` clears both runs and scenario sets
+- [ ] All existing tests pass
+
+**Review Focus**:
+- Lock acquisition order (single lock, no deadlocks)
+- `get_runs_for_set()` filters correctly by `scenario_set_id`
+
+---
+
+### PR 5: Add LLM Scenario Generation Interface
+
+**Scope**: Extend `LLMClient` protocol. Add mock implementation.
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `app/llm/interface.py` | Add `generate_scenario_definitions()` to Protocol |
+| `app/llm/mock.py` | Add mock implementation |
+| `tests/test_llm_mock.py` | Add tests for new method |
+
+**Protocol Addition**:
+```python
+def generate_scenario_definitions(
+    self,
+    brief: str,
+    asset_summary: str,
+    num_scenarios: int,
+) -> list[ScenarioDefinition]:
+    """Generate scenario definitions from a brief."""
+    ...
+```
+
+**Mock Implementation Contract**:
+- Always returns exactly `num_scenarios` definitions
+- First scenario is always `kind=BASE`
+- Returns deterministic results for testing
+
+**Invariant Checks**:
+- [ ] Existing `LLMClient` methods unchanged
+- [ ] `MockLLMClient` satisfies full protocol
+- [ ] All existing tests pass
+
+**Review Focus**:
+- Mock returns valid `ScenarioDefinition` objects
+- First scenario is always BASE
+
+---
+
+### PR 6: Add OpenAI Scenario Generation
+
+**Scope**: Implement `generate_scenario_definitions()` for OpenAI client.
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `app/llm/openai_client.py` | Add `generate_scenario_definitions()` |
+| `app/llm/prompts/scenario_gen.py` | NEW: Prompt template |
+
+**Prompt Contract**:
+- Input: brief, asset_summary, num_scenarios
+- Output: JSON array matching `ScenarioDefinition` schema
+- First scenario MUST be `kind=base`
+- All scenarios must have unique labels
+
+**Invariant Checks**:
+- [ ] Existing OpenAI methods unchanged
+- [ ] Output validated against `ScenarioDefinition` schema
+- [ ] Graceful error handling for malformed LLM output
+
+**Review Focus**:
+- Prompt clarity and constraints
+- JSON parsing and validation
+- Error handling for invalid LLM responses
+
+---
+
+### PR 7: Add Scenario Orchestrator (Core Logic)
+
+**Scope**: New `scenario_orchestrator.py` with `build_scenario_request()` and `run_scenario_set()`.
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `app/scenario_orchestrator.py` | NEW: Core orchestration logic |
+| `tests/test_scenario_orchestrator.py` | NEW: Unit and integration tests |
+
+**Key Functions**:
+```python
+def build_scenario_request(base_request, scenario) -> ProgramRequest
+def run_scenario_set(brief, base_request, llm, config, num_scenarios, fund_id) -> (ScenarioSetSummary, list[dict])
+```
+
+**Critical Invariants**:
+- [ ] `build_scenario_request()` NEVER modifies `assets` or `corporate_state`
+- [ ] BASE scenario gets `floor_override = target_amount` (no revision)
+- [ ] Variant scenarios get `floor_override = target * 0.9` (agentic)
+- [ ] Each scenario calls existing `run_program()` unchanged
+- [ ] `RunRecord`s stored with correct `scenario_set_id`, `scenario_kind`, `scenario_label`
+
+**Determinism Checks**:
+- [ ] BASE scenario: `floor_fraction = 1.0` → revision loop exits after 1 iteration
+- [ ] Same inputs → same outputs (via existing engine determinism)
+
+**Review Focus**:
+- `build_scenario_request()` preserves base request immutably
+- BASE vs variant floor logic is correct
+- Error handling for individual scenario failures
+
+---
+
+### PR 8: Add Scenario Set API Endpoints
+
+**Scope**: Wire up HTTP endpoints for scenario sets.
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `app/api.py` | Add `POST/GET /api/scenario_sets`, `GET /api/scenario_sets/{id}` |
+| `tests/test_api.py` | Add endpoint tests |
+
+**Endpoints**:
+| Method | Path | Handler |
+|--------|------|---------|
+| POST | `/api/scenario_sets` | `create_scenario_set()` |
+| GET | `/api/scenario_sets` | `list_scenario_sets()` |
+| GET | `/api/scenario_sets/{id}` | `get_scenario_set()` |
+
+**Invariant Checks**:
+- [ ] Existing `/api/runs` endpoints unchanged
+- [ ] `POST /api/runs` still works for single scenarios
+- [ ] Response shapes match spec in Section 6
+
+**Review Focus**:
+- Error handling (404 for missing set, 503 for LLM failure)
+- Response includes both `scenario_set` and `runs`
+
+---
+
+### PR 9: Frontend Type Updates (Optional)
+
+**Scope**: Update frontend to consume new fields. No UI changes yet.
+
+**Files**:
+| File | Changes |
+|------|---------|
+| `frontend/src/types/index.ts` | Ensure scenario types are complete |
+| `frontend/src/components/RunList.tsx` | Handle nullable scenario fields |
+
+**Invariant Checks**:
+- [ ] Existing UI renders correctly
+- [ ] No runtime errors from new nullable fields
+- [ ] TypeScript compiles without errors
+
+---
+
+## 9. PR Dependency Graph
+
+```
+PR1 (models)
+  │
+  ▼
+PR2 (RunRecord fields)
+  │
+  ├──────────────────┐
+  ▼                  ▼
+PR3 (API response)  PR4 (RunStore methods)
+  │                  │
+  │                  ▼
+  │                PR5 (LLM interface + mock)
+  │                  │
+  │                  ▼
+  │                PR6 (OpenAI implementation)
+  │                  │
+  └──────────────────┤
+                     ▼
+                   PR7 (scenario_orchestrator.py)
+                     │
+                     ▼
+                   PR8 (API endpoints)
+                     │
+                     ▼
+                   PR9 (Frontend - optional)
+```
+
+**Parallel Work**:
+- PR3 and PR4 can proceed in parallel after PR2
+- PR5 and PR6 can proceed after PR4
+- PR7 requires PR3, PR4, PR5/PR6
+
+---
+
+## 10. Verification Checklist (Per PR)
+
+Run these checks before merging each PR:
+
+```bash
+# 1. All existing tests pass
+pytest tests/ -v
+
+# 2. Type checking passes
+mypy app/
+
+# 3. No regressions in API responses
+# (manual or automated API tests)
+
+# 4. Frontend compiles (if types changed)
+cd frontend && npm run build
+```
+
+**Interface Consistency Checks**:
+- [ ] Python `ScenarioKind` values match TypeScript `ScenarioKind` type
+- [ ] Python `ScenarioSetSummary` fields match TypeScript interface
+- [ ] API response JSON keys match TypeScript interface properties
+- [ ] Nullable fields are `T | null` in TypeScript, `Optional[T]` in Python
+
+---
+
+## 9. Open Questions / Risks
+
+### 9.1 Resolved Questions
+
+| Question | Decision |
+|----------|----------|
+| Proceeds story? | **Different capital asks** - target varies per scenario |
+| Separate ScenarioStore? | **No** - fold into RunStore |
+| Duplicate metadata on ScenarioSetSummary? | **No** - derive from runs |
+| LLM control surface? | **Minimal v1** - only target, max_leverage, min_coverage |
+
+### 9.2 Remaining Open Questions
 
 | Question | Impact | Recommendation |
 |----------|--------|----------------|
-| Should scenario sets have their own `fund_id`? | API design | No - inherit from runs for simplicity |
-| Should we support partial execution (some scenarios fail)? | UX | Yes - return completed + failed in same response |
-| How to handle LLM timeout during scenario generation? | Reliability | Return partial results + error for remaining |
-| Should scenarios share the same `AuditTrace` or have separate ones? | Data model | **Separate** - each run has its own trace |
+| Partial execution (some scenarios fail)? | UX | Yes - return completed + failed |
+| LLM timeout during generation? | Reliability | Fail entire set, don't return partial |
 
-### 8.2 Potential Breaking Edges
+### 9.3 Risk Mitigation
 
 | Risk | Mitigation |
 |------|------------|
-| Frontend crashes on new fields | All new fields are optional with defaults |
-| Existing `/api/runs` consumers break | Response shape only gains fields, never loses them |
-| ScenarioSetSummary serialization | Use Pydantic's `model_dump()` for JSON |
-| Race conditions in stores | Both stores use `threading.Lock()` |
+| Frontend breaks on new fields | Fields are nullable, always present |
+| Type confusion on scenario_kind | `Optional[ScenarioKind]` with explicit null semantics |
+| Store consistency | Single `RunStore` with lock, no cross-store issues |
 
-### 8.3 Performance Considerations
-
-| Concern | Mitigation |
-|---------|------------|
-| N LLM calls per scenario set | Batch scenario generation in single LLM call |
-| N engine runs sequentially | Consider parallel execution (asyncio) in future |
-| Large response payloads | Scenario set list endpoint returns summaries only |
-
-### 8.4 Fields That CANNOT Change
-
-These would break the frontend or existing integrations:
-
-- `RunRecord.run_id` (primary key)
-- `RunRecord.response` (full ProgramResponse)
-- `ProgramResponse.outcome.status` values
-- `AuditTrace` structure
-- `/api/runs/{id}` response shape (only additive changes)
-
-### 8.5 Deferred Decisions
+### 9.4 Deferred Decisions
 
 | Decision | Why Deferred |
 |----------|--------------|
-| Async scenario execution | Adds complexity; sequential is fine for MVP |
-| Scenario set deletion | Not needed yet; can add later |
-| Scenario comparison metrics | UI-dependent; design with frontend team |
-| Persistent storage | In-memory is fine for MVP; migrate to DB later |
+| Async scenario execution | Sequential is fine for v1 |
+| Filter overrides (criticality, leaseability) | Keep LLM surface small for v1 |
+| Market exclusions per scenario | Adds complexity, defer to v2 |
+| Persistent storage | In-memory is fine for MVP |
 
 ---
 
-## 9. Summary
+## 10. Summary
 
-This plan introduces multi-scenario orchestration as an **additive layer** on top of the existing single-scenario system:
+This plan introduces multi-scenario orchestration as an **additive layer**:
 
-1. **New models**: `ScenarioKind`, `ScenarioDefinition`, `ScenarioSetSummary`
-2. **Extended models**: `RunRecord` gains optional scenario metadata
-3. **New orchestrator**: `run_scenario_set()` coordinates N single-scenario runs
-4. **New API**: `/api/scenario_sets` endpoints (additive)
-5. **Existing API**: `/api/runs` unchanged except for new optional fields
+| Component | Change |
+|-----------|--------|
+| `models.py` | Add `ScenarioKind`, `ScenarioDefinition`, `ScenarioSetSummary` |
+| `run_store.py` | Add scenario fields to `RunRecord`, add scenario set storage |
+| `scenario_orchestrator.py` | NEW: `build_scenario_request()`, `run_scenario_set()` |
+| `llm/interface.py` | Add `generate_scenario_definitions()` to protocol |
+| `api.py` | Add `/api/scenario_sets` endpoints |
+| `/api/runs` | Additive nullable fields only |
 
-**Key principle**: Every existing test should pass after each step. The single-scenario path remains the default and unchanged.
+**Key principles**:
+1. Every existing test passes after each step
+2. Single-scenario path unchanged (scenario fields = null)
+3. Metadata lives on runs, not duplicated on sets
+4. LLM contract is minimal for v1 (3 numeric knobs)
+5. Monotonic target rule applies to revision loop only, not scenario generation
+6. **Base scenario is deterministic** (no revision) - shows exactly what user asked for
+7. **Variant scenarios are agentic** - explore what's achievable within bounds
