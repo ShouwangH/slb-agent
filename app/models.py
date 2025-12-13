@@ -689,3 +689,16 @@ class ScenarioSetSummary(BaseModel):
     brief: str = Field(..., description="Original natural language brief")
     created_at: str = Field(..., description="ISO timestamp")
     run_ids: list[str] = Field(..., description="Ordered list of run IDs")
+
+
+class ScenarioDefinitionList(BaseModel):
+    """
+    Wrapper for list of ScenarioDefinitions.
+
+    Required for OpenAI structured output which needs a Pydantic model,
+    not a raw list.
+    """
+
+    scenarios: list[ScenarioDefinition] = Field(
+        ..., min_length=1, max_length=5, description="List of scenario definitions"
+    )

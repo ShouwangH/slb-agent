@@ -16,6 +16,7 @@ from app.models import (
     ExplanationNode,
     ProgramOutcome,
     ProgramType,
+    ScenarioDefinition,
     SelectorSpec,
 )
 
@@ -112,5 +113,34 @@ class LLMClient(Protocol):
             - Lead with the key outcome (feasible/infeasible)
             - Highlight binding constraints or key drivers
             - Note any significant risks
+        """
+        ...
+
+    def generate_scenario_definitions(
+        self,
+        brief: str,
+        asset_summary: str,
+        num_scenarios: int,
+    ) -> list[ScenarioDefinition]:
+        """
+        Generate scenario definitions from a brief.
+
+        Creates multiple scenario variants (base, conservative, aggressive, etc.)
+        from a single natural language brief. Each scenario represents a different
+        capital ask with potentially different constraints.
+
+        Args:
+            brief: Natural language program description
+            asset_summary: Summary of available assets (from summarize_assets)
+            num_scenarios: Number of scenarios to generate (1-5)
+
+        Returns:
+            List of ScenarioDefinition objects
+
+        Contract:
+            - First scenario MUST be kind=BASE
+            - Each scenario has unique label
+            - target_amount is required for each scenario
+            - max_leverage and min_coverage are optional
         """
         ...

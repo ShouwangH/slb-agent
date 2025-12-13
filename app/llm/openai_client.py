@@ -22,6 +22,8 @@ from app.exceptions import InfrastructureError
 from app.llm.prompts import (
     format_explanation_system,
     format_explanation_user,
+    format_generate_scenarios_system,
+    format_generate_scenarios_user,
     format_generate_spec_system,
     format_generate_spec_user,
     format_revise_spec_system,
@@ -31,6 +33,8 @@ from app.models import (
     ExplanationNode,
     ProgramOutcome,
     ProgramType,
+    ScenarioDefinition,
+    ScenarioDefinitionList,
     SelectorSpec,
 )
 
@@ -302,3 +306,52 @@ class OpenAILLMClient:
         user_prompt = format_explanation_user(nodes)
 
         return self._call_text(system_prompt, user_prompt)
+
+    def generate_scenario_definitions(
+        self,
+        brief: str,
+        asset_summary: str,
+        num_scenarios: int,
+    ) -> list[ScenarioDefinition]:
+        """
+        Generate scenario definitions from a brief.
+
+        Creates multiple scenario variants (base, conservative, aggressive, etc.)
+        from a single natural language brief. Uses structured output to ensure
+        valid ScenarioDefinition responses.
+
+        Args:
+            brief: Natural language program description
+            asset_summary: Summary of available assets
+            num_scenarios: Number of scenarios to generate (1-5)
+
+        Returns:
+            List of ScenarioDefinition objects
+
+        Contract:
+            - First scenario MUST be kind=BASE
+            - Each scenario has unique label
+            - target_amount is required for each scenario
+            - max_leverage and min_coverage are optional
+
+        Raises:
+            LLMError: If API call fails
+        """
+        # Clamp num_scenarios to valid range
+        num_scenarios = max(1, min(num_scenarios, 5))
+
+        system_prompt = format_generate_scenarios_system(num_scenarios)
+        user_prompt = format_generate_scenarios_user(
+            brief=brief,
+            asset_summary=asset_summary,
+            num_scenarios=num_scenarios,
+        )
+
+        result = self._call_structured(system_prompt, user_prompt, ScenarioDefinitionList)
+
+        logger.info(
+            f"LLM generated {len(result.scenarios)} scenarios: "
+            f"{[s.label for s in result.scenarios]}"
+        )
+
+        return result.scenarios

@@ -1060,6 +1060,32 @@
   color: white;
 }
 
+/* Section inline content (collapsible) */
+.section-inline-content {
+  padding: var(--space-sm) var(--space-md);
+  padding-left: calc(var(--space-md) + 20px);
+  background: var(--color-gray-50);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.corporate-inline-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+  font-size: 0.75rem;
+}
+
+.corporate-inline-row span:first-child {
+  color: var(--text-muted);
+}
+
+.corporate-inline-row span:last-child {
+  font-weight: 500;
+  color: var(--text-body);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+}
+
 /* =============================================================================
  * Assets Panel
  * ============================================================================= */
@@ -1297,4 +1323,61 @@
 .status-badge.completed {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+/* =============================================================================
+ * Corporate State Card
+ * ============================================================================= */
+
+.corporate-state-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+}
+
+.corporate-state-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: var(--space-sm);
+  letter-spacing: 0.05em;
+}
+
+.corporate-state-metrics,
+.corporate-state-ratios {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.corporate-state-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+}
+
+.corporate-state-row .metric-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.corporate-state-row .metric-value {
+  font-weight: 500;
+  color: var(--text-body);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.corporate-state-row .metric-value.ratio {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.corporate-state-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: var(--space-sm) 0;
 }

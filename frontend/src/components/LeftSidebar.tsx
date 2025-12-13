@@ -9,10 +9,11 @@ import { useState } from "react";
 import { SectionNav, type SidebarSection } from "./SectionNav";
 import { AssetsPanel } from "./AssetsPanel";
 import { RunsPanel } from "./RunsPanel";
-import type { Asset, RunListItem } from "../types";
+import type { Asset, CorporateState, RunListItem } from "../types";
 
 interface LeftSidebarProps {
   assets: Asset[];
+  corporateState: CorporateState;
   runs: RunListItem[];
   selectedRunId: string | null;
   onSelectRun: (runId: string) => void;
@@ -21,6 +22,7 @@ interface LeftSidebarProps {
 
 export function LeftSidebar({
   assets,
+  corporateState,
   runs,
   selectedRunId,
   onSelectRun,
@@ -35,6 +37,7 @@ export function LeftSidebar({
         onSectionChange={setActiveSection}
         runCount={runs.length}
         assetCount={assets.length}
+        corporateState={corporateState}
       />
 
       <div className="left-sidebar-content">

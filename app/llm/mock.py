@@ -19,6 +19,8 @@ from app.models import (
     Objective,
     ProgramOutcome,
     ProgramType,
+    ScenarioDefinition,
+    ScenarioKind,
     SelectionStatus,
     SelectorSpec,
     SoftPreferences,
@@ -250,6 +252,88 @@ class MockLLMClient:
             parts.append(f"Note: {risk_label} should be monitored.")
 
         return " ".join(parts)
+
+    def generate_scenario_definitions(
+        self,
+        brief: str,
+        asset_summary: str,
+        num_scenarios: int,
+    ) -> list[ScenarioDefinition]:
+        """
+        Generate scenario definitions from a brief.
+
+        Returns deterministic scenarios for testing. First scenario is always BASE.
+
+        Args:
+            brief: Natural language program description
+            asset_summary: Summary of available assets
+            num_scenarios: Number of scenarios to generate (1-5)
+
+        Returns:
+            List of ScenarioDefinition objects
+        """
+        self.call_counts["generate_scenario_definitions"] = (
+            self.call_counts.get("generate_scenario_definitions", 0) + 1
+        )
+        self.call_history.append({
+            "method": "generate_scenario_definitions",
+            "brief": brief,
+            "asset_summary": asset_summary,
+            "num_scenarios": num_scenarios,
+        })
+
+        # Extract base target from brief
+        base_target = self._extract_target_from_description(brief)
+        if base_target is None:
+            base_target = self.default_target_amount
+
+        # Define scenario templates
+        templates = [
+            # BASE is always first
+            ScenarioDefinition(
+                label="Base Case",
+                kind=ScenarioKind.BASE,
+                rationale="Direct interpretation of the brief requirements",
+                target_amount=base_target,
+                max_leverage=None,
+                min_coverage=None,
+            ),
+            ScenarioDefinition(
+                label="Conservative",
+                kind=ScenarioKind.RISK_OFF,
+                rationale="Lower target with tighter leverage covenant for reduced risk",
+                target_amount=base_target * 0.8,
+                max_leverage=3.0,
+                min_coverage=3.5,
+            ),
+            ScenarioDefinition(
+                label="Aggressive",
+                kind=ScenarioKind.AGGRESSIVE,
+                rationale="Higher target to maximize capital raised",
+                target_amount=base_target * 1.25,
+                max_leverage=None,
+                min_coverage=None,
+            ),
+            ScenarioDefinition(
+                label="Balanced",
+                kind=ScenarioKind.CUSTOM,
+                rationale="Moderate target with standard constraints",
+                target_amount=base_target * 0.9,
+                max_leverage=3.5,
+                min_coverage=3.0,
+            ),
+            ScenarioDefinition(
+                label="Maximum Proceeds",
+                kind=ScenarioKind.AGGRESSIVE,
+                rationale="Push for maximum proceeds accepting higher risk",
+                target_amount=base_target * 1.5,
+                max_leverage=4.5,
+                min_coverage=2.5,
+            ),
+        ]
+
+        # Return requested number of scenarios (up to 5)
+        return templates[:min(num_scenarios, len(templates))]
 
     # =========================================================================
     # Helper Methods
