@@ -285,6 +285,10 @@ def get_run(run_id: str) -> dict:
         "response": record.response,
         "error": record.error,
         "created_at": record.created_at,
+        # Scenario metadata (null for single-scenario runs)
+        "scenario_set_id": record.scenario_set_id,
+        "scenario_kind": record.scenario_kind.value if record.scenario_kind else None,
+        "scenario_label": record.scenario_label,
     }
 
 
@@ -315,6 +319,10 @@ def list_runs(
             "program_description": r.program_description,
             "status": "completed" if r.response else "failed",
             "created_at": r.created_at,
+            # Scenario metadata (null for single-scenario runs)
+            "scenario_set_id": r.scenario_set_id,
+            "scenario_kind": r.scenario_kind.value if r.scenario_kind else None,
+            "scenario_label": r.scenario_label,
         }
         for r in records
     ]

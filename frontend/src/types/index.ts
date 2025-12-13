@@ -274,6 +274,10 @@ export interface RunRecord {
   response: ProgramResponse | null;
   error: string | null;
   created_at: string;
+  // Scenario metadata (null = single-scenario run, not part of any set)
+  scenario_set_id: string | null;
+  scenario_kind: ScenarioKind | null;
+  scenario_label: string | null;
 }
 
 export interface RunListItem {
@@ -282,6 +286,10 @@ export interface RunListItem {
   program_description: string;
   status: "completed" | "failed";
   created_at: string;
+  // Scenario metadata (null = single-scenario run, not part of any set)
+  scenario_set_id: string | null;
+  scenario_kind: ScenarioKind | null;
+  scenario_label: string | null;
 }
 
 export interface CreateRunResponse {
