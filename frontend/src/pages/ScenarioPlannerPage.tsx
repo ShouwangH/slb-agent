@@ -12,12 +12,11 @@ import {
   LeftSidebar,
   LoadingSpinner,
   AuditTraceTimeline,
-  NumericInvariantsCard,
   MetricsCard,
   AssetTable,
 } from "../components";
 import { createRun, getRun, listRuns, ApiError } from "../api/runs";
-import { SAMPLE_ASSETS } from "../data/sampleAssets";
+import { SAMPLE_ASSETS, DEFAULT_CORPORATE_STATE } from "../data/sampleAssets";
 import type {
   ProgramRequest,
   RunListItem,
@@ -127,6 +126,7 @@ export function ScenarioPlannerPage() {
       <aside className="sidebar-left">
         <LeftSidebar
           assets={SAMPLE_ASSETS}
+          corporateState={DEFAULT_CORPORATE_STATE}
           runs={runs}
           selectedRunId={selectedRunId}
           onSelectRun={handleSelectRun}
@@ -200,14 +200,8 @@ export function ScenarioPlannerPage() {
 
       {/* Right Sidebar: Metrics */}
       <aside className="sidebar-right">
-        {response && response.audit_trace && (
-          <>
-            <NumericInvariantsCard
-              auditTrace={response.audit_trace}
-              finalProceeds={response.outcome.proceeds}
-            />
-            <MetricsCard outcome={response.outcome} />
-          </>
+        {response && (
+          <MetricsCard outcome={response.outcome} />
         )}
 
         {!response && (

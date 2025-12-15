@@ -18,7 +18,7 @@ from app.config import (
     EngineConfig,
     PromptConfig,
 )
-from app.models import ConstraintViolation, ExplanationNode, ProgramOutcome, SelectorSpec
+from app.models import ConstraintViolation, ExplanationNode, ProgramOutcome, ScenarioKind, SelectorSpec
 
 # =============================================================================
 # generate_selector_spec Prompts (Section 9.2)
@@ -274,3 +274,76 @@ def format_explanation_user(nodes: list[ExplanationNode]) -> str:
         nodes_json += f"  {node.model_dump_json()},\n"
     nodes_json += "]"
     return GENERATE_EXPLANATION_USER.format(nodes_json=nodes_json)
+
+
+# =============================================================================
+# generate_scenario_definitions Prompts (Multi-Scenario Orchestration)
+# =============================================================================
+
+GENERATE_SCENARIOS_SYSTEM = """You are a commercial real estate funding strategist. Generate multiple
+scenario variants for a sale-leaseback (SLB) program based on the brief.
+
+Your job is to create {num_scenarios} distinct scenarios representing different strategic approaches
+to the same program brief. Each scenario represents a different capital ask with potentially
+different constraint tradeoffs.
+
+SCENARIO KINDS:
+- base: Direct interpretation of the brief (MUST be first)
+- risk_off: Conservative approach - lower target, tighter constraints
+- aggressive: Higher target, more relaxed constraints to maximize proceeds
+- geo_focus: Geographic concentration variant (if relevant to brief)
+- custom: Any other strategic variant with clear rationale
+
+RULES:
+1. First scenario MUST be kind="base" - the direct interpretation of the brief
+2. Each scenario must have a unique label (max 50 chars)
+3. Each scenario must have a clear rationale (max 200 chars)
+4. target_amount is REQUIRED for each scenario (must be > 0)
+5. max_leverage and min_coverage are OPTIONAL (null = use system default)
+
+SCENARIO DESIGN PRINCIPLES:
+- BASE: Extract the exact target from the brief if provided, use conservative defaults
+- RISK_OFF: 15-25% lower target than base, tighter leverage (e.g., 3.0-3.5x)
+- AGGRESSIVE: 20-40% higher target than base, may relax coverage slightly
+- Vary the targets meaningfully - don't just add/subtract 1%
+
+CONSTRAINTS (v1 - only these three knobs):
+- target_amount: The target proceeds for this scenario (required, > 0)
+- max_leverage: Maximum net debt / EBITDA ratio (optional, 0-10, null = use default ~4.0)
+- min_coverage: Minimum fixed charge coverage ratio (optional, 0-20, null = use default ~3.0)
+
+OUTPUT FORMAT:
+Return a JSON object with a "scenarios" array containing {num_scenarios} ScenarioDefinition objects."""
+
+GENERATE_SCENARIOS_USER = """Program Brief:
+{brief}
+
+Asset Summary:
+{asset_summary}
+
+Generate {num_scenarios} scenario variants as a JSON object with a "scenarios" array."""
+
+
+def format_scenario_kinds_list() -> str:
+    """Format the list of valid scenario kinds."""
+    return ", ".join(f'"{k.value}"' for k in ScenarioKind)
+
+
+def format_generate_scenarios_system(num_scenarios: int) -> str:
+    """Format the system prompt for generate_scenario_definitions."""
+    return GENERATE_SCENARIOS_SYSTEM.format(
+        num_scenarios=num_scenarios,
+    )
+
+
+def format_generate_scenarios_user(
+    brief: str,
+    asset_summary: str,
+    num_scenarios: int,
+) -> str:
+    """Format the user prompt for generate_scenario_definitions."""
+    return GENERATE_SCENARIOS_USER.format(
+        brief=brief,
+        asset_summary=asset_summary,
+        num_scenarios=num_scenarios,
+    )

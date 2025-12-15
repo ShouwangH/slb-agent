@@ -1,13 +1,14 @@
 """
 Tests for the FastAPI application.
 
-Tests the POST /program endpoint with various inputs and error conditions.
+Tests the API endpoints with various inputs and error conditions.
 
 Test categories:
 - Happy path (valid request → 200)
 - Validation errors (duplicate IDs → 400)
 - Pydantic errors (missing fields → 422)
 - Internal errors (mock failure → 500)
+- Scenario sets (POST/GET /api/scenario_sets)
 """
 
 from unittest.mock import patch
@@ -366,3 +367,260 @@ class TestErrorResponseStructure:
         code = response.json()["detail"]["code"]
         assert code == code.upper()
         assert "_" in code or code.isalpha()
+
+
+# =============================================================================
+# Scenario Sets API Tests
+# =============================================================================
+
+
+class TestScenarioSetsCreate:
+    """Tests for POST /api/scenario_sets endpoint."""
+
+    def test_create_scenario_set_returns_201(self, client: TestClient) -> None:
+        """Valid request creates scenario set and returns 201."""
+        request_data = make_valid_request()
+
+        response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Raise $10M via SLB with conservative constraints",
+                "num_scenarios": 2,
+            },
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+
+        # Verify response structure
+        assert "scenario_set" in data
+        assert "runs" in data
+
+        # Verify scenario_set fields
+        scenario_set = data["scenario_set"]
+        assert "id" in scenario_set
+        assert "brief" in scenario_set
+        assert "created_at" in scenario_set
+        assert "run_ids" in scenario_set
+
+        # Brief should match what we sent
+        assert scenario_set["brief"] == "Raise $10M via SLB with conservative constraints"
+
+    def test_create_scenario_set_returns_correct_number_of_runs(
+        self, client: TestClient
+    ) -> None:
+        """Scenario set returns requested number of runs."""
+        request_data = make_valid_request()
+
+        response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief",
+                "num_scenarios": 3,
+            },
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+
+        # Should have 3 runs
+        assert len(data["runs"]) == 3
+        assert len(data["scenario_set"]["run_ids"]) == 3
+
+    def test_create_scenario_set_first_run_is_base(self, client: TestClient) -> None:
+        """First run in scenario set should be BASE kind."""
+        request_data = make_valid_request()
+
+        response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief",
+                "num_scenarios": 3,
+            },
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+
+        # First run should be BASE
+        first_run = data["runs"][0]
+        assert first_run["scenario_kind"] == "base"
+
+    def test_create_scenario_set_runs_have_scenario_metadata(
+        self, client: TestClient
+    ) -> None:
+        """All runs should have scenario metadata."""
+        request_data = make_valid_request()
+
+        response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief",
+                "num_scenarios": 2,
+            },
+        )
+
+        assert response.status_code == 201
+        data = response.json()
+
+        scenario_set_id = data["scenario_set"]["id"]
+        for run in data["runs"]:
+            assert run["scenario_set_id"] == scenario_set_id
+            assert run["scenario_kind"] is not None
+            assert run["scenario_label"] is not None
+            assert "status" in run
+
+    def test_create_scenario_set_with_fund_id(self, client: TestClient) -> None:
+        """Scenario set can be created with fund_id."""
+        request_data = make_valid_request()
+
+        response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief",
+                "num_scenarios": 2,
+                "fund_id": "test-fund-123",
+            },
+        )
+
+        assert response.status_code == 201
+
+    def test_create_scenario_set_num_scenarios_bounds(self, client: TestClient) -> None:
+        """num_scenarios must be between 1 and 5."""
+        request_data = make_valid_request()
+
+        # Too low
+        response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief",
+                "num_scenarios": 0,
+            },
+        )
+        assert response.status_code == 422
+
+        # Too high
+        response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief",
+                "num_scenarios": 6,
+            },
+        )
+        assert response.status_code == 422
+
+
+class TestScenarioSetsList:
+    """Tests for GET /api/scenario_sets endpoint."""
+
+    def test_list_scenario_sets_returns_200(self, client: TestClient) -> None:
+        """List scenario sets returns 200."""
+        response = client.get("/api/scenario_sets")
+
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    def test_list_scenario_sets_returns_created_sets(self, client: TestClient) -> None:
+        """List returns scenario sets that were created."""
+        request_data = make_valid_request()
+
+        # Create a scenario set
+        create_response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief for listing",
+                "num_scenarios": 2,
+            },
+        )
+        assert create_response.status_code == 201
+        created_id = create_response.json()["scenario_set"]["id"]
+
+        # List and verify it's there
+        list_response = client.get("/api/scenario_sets")
+        assert list_response.status_code == 200
+
+        sets = list_response.json()
+        set_ids = [s["id"] for s in sets]
+        assert created_id in set_ids
+
+    def test_list_scenario_sets_respects_limit(self, client: TestClient) -> None:
+        """List respects limit parameter."""
+        response = client.get("/api/scenario_sets", params={"limit": 5})
+
+        assert response.status_code == 200
+        assert len(response.json()) <= 5
+
+
+class TestScenarioSetsGetById:
+    """Tests for GET /api/scenario_sets/{id} endpoint."""
+
+    def test_get_scenario_set_returns_200(self, client: TestClient) -> None:
+        """Get existing scenario set returns 200."""
+        request_data = make_valid_request()
+
+        # Create a scenario set
+        create_response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief for get",
+                "num_scenarios": 2,
+            },
+        )
+        assert create_response.status_code == 201
+        created_id = create_response.json()["scenario_set"]["id"]
+
+        # Get by ID
+        get_response = client.get(f"/api/scenario_sets/{created_id}")
+        assert get_response.status_code == 200
+
+        data = get_response.json()
+        assert "scenario_set" in data
+        assert "runs" in data
+        assert data["scenario_set"]["id"] == created_id
+
+    def test_get_scenario_set_includes_full_runs(self, client: TestClient) -> None:
+        """Get by ID includes full run details with responses."""
+        request_data = make_valid_request()
+
+        # Create a scenario set
+        create_response = client.post(
+            "/api/scenario_sets",
+            json=request_data,
+            params={
+                "brief": "Test brief for full runs",
+                "num_scenarios": 2,
+            },
+        )
+        assert create_response.status_code == 201
+        created_id = create_response.json()["scenario_set"]["id"]
+
+        # Get by ID
+        get_response = client.get(f"/api/scenario_sets/{created_id}")
+        assert get_response.status_code == 200
+
+        data = get_response.json()
+        for run in data["runs"]:
+            # Full run details should be present
+            assert "run_id" in run
+            assert "status" in run
+            assert "scenario_set_id" in run
+            assert "scenario_kind" in run
+            assert "scenario_label" in run
+            # Should have response or error
+            assert "response" in run or "error" in run
+
+    def test_get_scenario_set_not_found_returns_404(self, client: TestClient) -> None:
+        """Get non-existent scenario set returns 404."""
+        response = client.get("/api/scenario_sets/non-existent-id")
+
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"].lower()

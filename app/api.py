@@ -9,6 +9,9 @@ Endpoints:
     POST /api/runs - Create and execute a program run
     GET /api/runs/{run_id} - Get a single run by ID
     GET /api/runs - List runs
+    POST /api/scenario_sets - Create and execute a multi-scenario run
+    GET /api/scenario_sets - List scenario sets
+    GET /api/scenario_sets/{id} - Get a scenario set with runs
 """
 
 import logging
@@ -33,9 +36,10 @@ from app.exceptions import InfrastructureError
 from app.llm.interface import LLMClient
 from app.llm.mock import MockLLMClient
 from app.llm.openai_client import OpenAILLMClient
-from app.models import ErrorResponse, ProgramRequest, ProgramResponse
+from app.models import ErrorResponse, ProgramRequest, ProgramResponse, ScenarioSetSummary
 from app.orchestrator import run_program
 from app.run_store import RunRecord, run_store
+from app.scenario_orchestrator import run_scenario_set
 from app.validation import ValidationError
 
 
@@ -326,3 +330,162 @@ def list_runs(
         }
         for r in records
     ]
+
+
+# =============================================================================
+# Scenario Sets API Endpoints
+# =============================================================================
+
+
+@app.post(
+    "/api/scenario_sets",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create and execute a multi-scenario run",
+    description="Creates multiple scenario variants from a brief and executes each. "
+    "Returns 201 with all runs (some may have failed).",
+    tags=["Scenario Sets"],
+)
+def create_scenario_set_endpoint(
+    request: ProgramRequest,
+    brief: str = Query(..., description="Natural language program brief"),
+    num_scenarios: int = Query(3, ge=1, le=5, description="Number of scenarios to generate"),
+    fund_id: Optional[str] = Query(None, description="Optional fund identifier"),
+) -> dict:
+    """
+    Create and execute a multi-scenario run.
+
+    Generates scenario variants from the brief and runs each through the engine.
+    Individual scenario failures don't fail the entire set.
+
+    Status Codes:
+        201: Scenario set created (check individual run statuses)
+        422: Pydantic validation error (malformed JSON)
+        503: Infrastructure error (LLM unreachable during scenario generation)
+    """
+    logger.info(f"Creating scenario set: num_scenarios={num_scenarios}, fund_id={fund_id}")
+
+    try:
+        llm = get_llm_client()
+        summary, runs = run_scenario_set(
+            brief=brief,
+            base_request=request,
+            llm=llm,
+            config=DEFAULT_ENGINE_CONFIG,
+            num_scenarios=num_scenarios,
+            fund_id=fund_id,
+        )
+
+        logger.info(f"Scenario set {summary.id} created with {len(runs)} runs")
+
+        return {
+            "scenario_set": {
+                "id": summary.id,
+                "brief": summary.brief,
+                "created_at": summary.created_at,
+                "run_ids": summary.run_ids,
+            },
+            "runs": runs,
+        }
+
+    except InfrastructureError as e:
+        logger.error(f"Scenario set creation failed (infrastructure): {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "Infrastructure error",
+                "detail": str(e),
+                "code": "LLM_UNAVAILABLE",
+            },
+        )
+
+    except Exception as e:
+        logger.exception("Scenario set creation failed (unexpected)")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "Internal error",
+                "detail": str(e),
+                "code": "INTERNAL_ERROR",
+            },
+        )
+
+
+@app.get(
+    "/api/scenario_sets",
+    summary="List scenario sets",
+    description="Returns a list of scenario sets, most recent first.",
+    tags=["Scenario Sets"],
+)
+def list_scenario_sets_endpoint(
+    limit: int = Query(10, ge=1, le=100, description="Maximum sets to return"),
+) -> list[dict]:
+    """
+    List scenario sets.
+
+    Returns summary list without full run details.
+
+    Status Codes:
+        200: Success (may be empty list)
+    """
+    sets = run_store.list_scenario_sets(limit=limit)
+
+    return [
+        {
+            "id": s.id,
+            "brief": s.brief,
+            "created_at": s.created_at,
+            "run_ids": s.run_ids,
+        }
+        for s in sets
+    ]
+
+
+@app.get(
+    "/api/scenario_sets/{set_id}",
+    summary="Get a scenario set by ID",
+    description="Returns the scenario set with full run details.",
+    tags=["Scenario Sets"],
+)
+def get_scenario_set_endpoint(set_id: str) -> dict:
+    """
+    Get a scenario set by ID.
+
+    Returns the set summary and all associated runs with full details.
+
+    Status Codes:
+        200: Set found
+        404: Set not found
+    """
+    summary = run_store.get_scenario_set(set_id)
+    if not summary:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Scenario set not found",
+        )
+
+    # Get all runs for this set
+    runs = run_store.get_runs_for_set(set_id)
+
+    return {
+        "scenario_set": {
+            "id": summary.id,
+            "brief": summary.brief,
+            "created_at": summary.created_at,
+            "run_ids": summary.run_ids,
+        },
+        "runs": [
+            {
+                "run_id": r.run_id,
+                "fund_id": r.fund_id,
+                "program_description": r.program_description,
+                "status": "completed" if r.response else "failed",
+                "response": r.response,
+                "error": r.error,
+                "created_at": r.created_at,
+                "scenario_set_id": r.scenario_set_id,
+                "scenario_kind": r.scenario_kind.value if r.scenario_kind else None,
+                "scenario_label": r.scenario_label,
+            }
+            for r in runs
+        ],
+    }

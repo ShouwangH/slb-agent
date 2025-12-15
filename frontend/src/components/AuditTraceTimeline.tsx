@@ -81,7 +81,7 @@ function TimelineEntry({ entry, isLast }: TimelineEntryProps) {
       <div className="entry-content">
         <div className="entry-header">
           <span className="iteration-label">
-            {entry.phase === "initial" ? "Initial" : `Revision ${entry.iteration}`}
+            {entry.phase === "initial" ? "Initial Request" : `Revision ${entry.iteration}`}
           </span>
           <span className={`status-badge ${outcome_snapshot.status}`}>
             {outcome_snapshot.status}

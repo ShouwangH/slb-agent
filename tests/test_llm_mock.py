@@ -19,6 +19,7 @@ from app.models import (
     Objective,
     ProgramOutcome,
     ProgramType,
+    ScenarioKind,
     SelectionStatus,
     SelectorSpec,
     SoftPreferences,
@@ -50,6 +51,9 @@ class TestLLMClientProtocol:
 
         assert hasattr(mock, "generate_explanation_summary")
         assert callable(mock.generate_explanation_summary)
+
+        assert hasattr(mock, "generate_scenario_definitions")
+        assert callable(mock.generate_scenario_definitions)
 
 
 # =============================================================================
@@ -596,3 +600,183 @@ class TestMockLLMIntegration:
         assert spec1.target_amount == spec2.target_amount
         assert spec1.objective == spec2.objective
         assert spec1.hard_constraints.max_net_leverage == spec2.hard_constraints.max_net_leverage
+
+
+# =============================================================================
+# generate_scenario_definitions Tests
+# =============================================================================
+
+
+class TestGenerateScenarioDefinitions:
+    """Tests for generate_scenario_definitions method."""
+
+    def test_returns_list_of_scenario_definitions(self):
+        """Returns a list of ScenarioDefinition objects."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise $100M via SLB",
+            asset_summary="10 assets, $500M total value",
+            num_scenarios=3,
+        )
+
+        assert isinstance(scenarios, list)
+        assert len(scenarios) == 3
+
+    def test_first_scenario_is_base(self):
+        """First scenario MUST be kind=BASE."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise $100M",
+            asset_summary="10 assets",
+            num_scenarios=3,
+        )
+
+        assert scenarios[0].kind == ScenarioKind.BASE
+        assert scenarios[0].label == "Base Case"
+
+    def test_returns_requested_number_of_scenarios(self):
+        """Returns exactly the requested number of scenarios (up to 5)."""
+        mock = MockLLMClient()
+
+        for num in [1, 2, 3, 4, 5]:
+            scenarios = mock.generate_scenario_definitions(
+                brief="Raise capital",
+                asset_summary="10 assets",
+                num_scenarios=num,
+            )
+            assert len(scenarios) == num
+
+    def test_max_five_scenarios(self):
+        """Returns at most 5 scenarios even if more requested."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise capital",
+            asset_summary="10 assets",
+            num_scenarios=10,
+        )
+
+        assert len(scenarios) == 5
+
+    def test_extracts_target_from_brief(self):
+        """Base scenario target is extracted from brief."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise $80M via SLB",
+            asset_summary="10 assets",
+            num_scenarios=3,
+        )
+
+        # Base scenario should have extracted target
+        assert scenarios[0].target_amount == 80_000_000
+
+    def test_uses_default_target_when_not_in_brief(self):
+        """Uses default target when brief doesn't specify amount."""
+        mock = MockLLMClient(default_target_amount=50_000_000)
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise capital for operations",
+            asset_summary="10 assets",
+            num_scenarios=3,
+        )
+
+        assert scenarios[0].target_amount == 50_000_000
+
+    def test_scenario_targets_vary(self):
+        """Different scenarios have different targets."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise $100M",
+            asset_summary="10 assets",
+            num_scenarios=3,
+        )
+
+        targets = [s.target_amount for s in scenarios]
+        # All targets should be unique
+        assert len(set(targets)) == 3
+
+    def test_scenarios_have_required_fields(self):
+        """All scenarios have required fields populated."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise $100M",
+            asset_summary="10 assets",
+            num_scenarios=3,
+        )
+
+        for s in scenarios:
+            assert s.label and len(s.label) > 0
+            assert s.kind is not None
+            assert s.rationale and len(s.rationale) > 0
+            assert s.target_amount > 0
+
+    def test_scenarios_have_unique_labels(self):
+        """All scenarios have unique labels."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise $100M",
+            asset_summary="10 assets",
+            num_scenarios=5,
+        )
+
+        labels = [s.label for s in scenarios]
+        assert len(set(labels)) == 5
+
+    def test_includes_conservative_scenario(self):
+        """Includes a RISK_OFF (conservative) scenario."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise $100M",
+            asset_summary="10 assets",
+            num_scenarios=3,
+        )
+
+        risk_off_scenarios = [s for s in scenarios if s.kind == ScenarioKind.RISK_OFF]
+        assert len(risk_off_scenarios) >= 1
+
+    def test_includes_aggressive_scenario(self):
+        """Includes an AGGRESSIVE scenario."""
+        mock = MockLLMClient()
+
+        scenarios = mock.generate_scenario_definitions(
+            brief="Raise $100M",
+            asset_summary="10 assets",
+            num_scenarios=3,
+        )
+
+        aggressive_scenarios = [s for s in scenarios if s.kind == ScenarioKind.AGGRESSIVE]
+        assert len(aggressive_scenarios) >= 1
+
+    def test_increments_call_count(self):
+        """Call count is incremented."""
+        mock = MockLLMClient()
+
+        mock.generate_scenario_definitions("brief", "summary", 3)
+        assert mock.call_counts.get("generate_scenario_definitions", 0) == 1
+
+        mock.generate_scenario_definitions("brief", "summary", 2)
+        assert mock.call_counts.get("generate_scenario_definitions", 0) == 2
+
+    def test_records_call_history(self):
+        """Call history is recorded."""
+        mock = MockLLMClient()
+
+        mock.generate_scenario_definitions(
+            brief="Raise $100M",
+            asset_summary="10 assets total",
+            num_scenarios=3,
+        )
+
+        assert len(mock.call_history) == 1
+        record = mock.call_history[0]
+        assert record["method"] == "generate_scenario_definitions"
+        assert record["brief"] == "Raise $100M"
+        assert record["asset_summary"] == "10 assets total"
+        assert record["num_scenarios"] == 3
